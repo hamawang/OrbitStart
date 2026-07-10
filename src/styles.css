@@ -9496,3 +9496,63 @@ body.bubble-menu-body #root {
   background: rgba(255, 122, 144, 0.16) !important;
   border-color: var(--danger) !important;
 }
+
+/* Sub Tag Dialog Styling Overrides */
+.subtag-dialog-body input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  min-height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  accent-color: var(--accent) !important;
+  cursor: pointer !important;
+  -webkit-appearance: checkbox !important;
+  appearance: checkbox !important;
+}
+
+.subtag-dialog-body label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: var(--space-2) !important;
+  margin: 0 !important;
+  padding: var(--space-1) var(--space-2) !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  color: var(--text) !important;
+}
+
+.subtag-dialog-body label:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Droppable subtag/root area drag hover states */
+.subtag-droppable-wrapper {
+  transition: all 0.2s ease;
+  border-radius: 8px;
+  padding: 4px;
+}
+.subtag-droppable-wrapper.drag-over {
+  background: rgba(var(--accent-rgb, 122, 144, 255), 0.08) !important;
+  box-shadow: 0 0 0 2px var(--accent) !important;
+}
+
+.root-droppable-wrapper {
+  transition: all 0.2s ease;
+  border-radius: 8px;
+  min-height: 50px;
+}
+.root-droppable-wrapper.drag-over {
+  background: rgba(var(--accent-rgb, 122, 144, 255), 0.08) !important;
+  box-shadow: 0 0 0 2px var(--accent) !important;
+}
+
+.resource-list .root-droppable-wrapper {
+  grid-column: 1 / -1;
+}
+
+

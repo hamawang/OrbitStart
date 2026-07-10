@@ -57,7 +57,7 @@ import {
 } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay } from "@dnd-kit/core";
+import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -261,7 +261,8 @@ type AppDialogState =
   | { type: "template"; value: string }
   | { type: "group-hotkey"; groupId: string; value: string }
   | { type: "app-update"; version: string; body: string; pendingUpdate: any }
-  | { type: "reset-confirm" };
+  | { type: "reset-confirm" }
+  | { type: "create-subtag"; value: string; itemIds: string[] };
 
 function getInitialView(): ViewId {
   if (typeof window === "undefined") return "dashboard";
@@ -830,6 +831,34 @@ interface SortableResourceRowProps {
   isOverlay?: boolean;
   isSimple?: boolean;
   densityFactor?: number;
+}
+
+function DroppableSubTagSection({ path, children }: { path: string; children: React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `droppable-subtag-${path}`,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`subtag-droppable-wrapper ${isOver ? "drag-over" : ""}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DroppableRootSection({ children, displayMode }: { children: React.ReactNode; displayMode: string }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: "droppable-subtag-root",
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`root-droppable-wrapper resource-list display-${displayMode} ${isOver ? "drag-over" : ""}`}
+    >
+      {children}
+    </div>
+  );
 }
 
 function SortableResourceRow({
@@ -1548,11 +1577,43 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
+    if (!over) return;
 
+    const activeIdStr = active.id as string;
+    const overIdStr = over.id as string;
+
+    // 1. Drop on droppable subtag container or root container
+    if (overIdStr.startsWith("droppable-subtag-")) {
+      const targetSubTag = overIdStr === "droppable-subtag-root" ? "" : overIdStr.replace("droppable-subtag-", "");
+      const activeItem = items.find((item) => item.id === activeIdStr);
+      if (activeItem && (activeItem.subTag || "") !== targetSubTag) {
+        setBusy(true);
+        updateItem({ ...activeItem, subTag: targetSubTag })
+          .then(() => reload())
+          .catch((err) => setToast(`移动失败: ${String(err)}`))
+          .finally(() => setBusy(false));
+      }
+      return;
+    }
+
+    // 2. Drop on another card belonging to a different subTag
+    const activeItem = items.find((item) => item.id === activeIdStr);
+    const overItem = items.find((item) => item.id === overIdStr);
+    if (activeItem && overItem && (activeItem.subTag || "") !== (overItem.subTag || "")) {
+      const targetSubTag = overItem.subTag || "";
+      setBusy(true);
+      updateItem({ ...activeItem, subTag: targetSubTag })
+        .then(() => reload())
+        .catch((err) => setToast(`移动失败: ${String(err)}`))
+        .finally(() => setBusy(false));
+      return;
+    }
+
+    // 3. Drop on another card within the same subTag (local sorting)
+    if (activeIdStr === overIdStr) return;
     setLocalOrder((prev) => {
-      const oldIndex = prev.indexOf(active.id as string);
-      const newIndex = prev.indexOf(over.id as string);
+      const oldIndex = prev.indexOf(activeIdStr);
+      const newIndex = prev.indexOf(overIdStr);
       if (oldIndex === -1 || newIndex === -1) return prev;
       const next = arrayMove(prev, oldIndex, newIndex);
       void debouncedReorder(next);
@@ -2448,6 +2509,33 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  async function confirmCreateSubTag(subTagName: string, itemIds: string[]) {
+    const cleanPath = cleanSubTag(subTagName);
+    if (!cleanPath) {
+      setToast("子目录名称不能为空");
+      return;
+    }
+    setBusy(true);
+    try {
+      const promises = itemIds.map((id) => {
+        const item = itemById.get(id);
+        if (item) {
+          return updateItem({ ...item, subTag: cleanPath });
+        }
+        return Promise.resolve(null);
+      });
+      await Promise.all(promises);
+      await reload();
+      setToast(`成功创建子目录并移动了 ${itemIds.length} 个资源`);
+      setDialog(null);
+    } catch (error) {
+      console.error("Failed to create subtag", error);
+      setToast("创建子目录失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleFavorite(item: OrbitItem) {
     setBusy(true);
     try {
@@ -2610,38 +2698,39 @@ export function MainApp({ windowLabel }: MainAppProps) {
     const collapsed = collapsedSubTagPaths.includes(node.path);
     const total = subTagNodeTotal(node);
     return (
-      <section
-        key={node.path}
-        className="subtag-resource-section"
-        style={{ "--subtag-depth": depth } as CSSProperties}
-      >
-        <header className="subtag-resource-head">
-          <button
-            type="button"
-            className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
-            onClick={() => toggleSubTagCollapsed(node.path)}
-            aria-label={collapsed ? "展开子目录" : "收起子目录"}
-            aria-expanded={!collapsed}
-          >
-            {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-          </button>
-          <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
-            <strong>{node.name}</strong>
-            <span>{total} 个资源</span>
-          </div>
-        </header>
+      <DroppableSubTagSection path={node.path} key={node.path}>
+        <section
+          className="subtag-resource-section"
+          style={{ "--subtag-depth": depth } as CSSProperties}
+        >
+          <header className="subtag-resource-head">
+            <button
+              type="button"
+              className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
+              onClick={() => toggleSubTagCollapsed(node.path)}
+              aria-label={collapsed ? "展开子目录" : "收起子目录"}
+              aria-expanded={!collapsed}
+            >
+              {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+            </button>
+            <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
+              <strong>{node.name}</strong>
+              <span>{total} 个资源</span>
+            </div>
+          </header>
 
-        {!collapsed && (
-          <div className="subtag-resource-body">
-            {node.items.length > 0 && (
-              <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
-                {renderResourceCards(node.items)}
-              </div>
-            )}
-            {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
-          </div>
-        )}
-      </section>
+          {!collapsed && (
+            <div className="subtag-resource-body">
+              {node.items.length > 0 && (
+                <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
+                  {renderResourceCards(node.items)}
+                </div>
+              )}
+              {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
+            </div>
+          )}
+        </section>
+      </DroppableSubTagSection>
     );
   }
 
@@ -3724,6 +3813,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
             <div className="section-actions">
               <span>{favoriteItems.length} 个星标 · {items.length} 个总条目</span>
+              <button
+                type="button"
+                className="secondary-action compact-action"
+                onClick={() => setDialog({ type: "create-subtag", value: "", itemIds: [] })}
+              >
+                添加子目录
+              </button>
               <button type="button" className="secondary-action compact-action" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}>
                 {batchMode ? "退出批量" : "批量管理"}
               </button>
@@ -3753,7 +3849,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
             >
               {subTagTree.length > 0 ? (
                 <>
-                  {rootResourceItems.length > 0 && renderResourceCards(rootResourceItems)}
+                  <DroppableRootSection displayMode={settings?.displayMode ?? "simple"}>
+                    {rootResourceItems.length > 0 ? (
+                      renderResourceCards(rootResourceItems)
+                    ) : (
+                      <div className="root-empty-droppable-area" style={{ padding: '24px 16px', border: '1px dashed var(--line)', borderRadius: '8px', color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', margin: '8px 0', opacity: 0.7, background: 'rgba(255, 255, 255, 0.02)' }}>
+                        拖拽资源到此处移回主目录
+                      </div>
+                    )}
+                  </DroppableRootSection>
                   <section className="subtag-resource-block">
                     <div className="section-head slim">
                       <p className="eyebrow">Sub Tags</p>
@@ -4712,7 +4816,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.7.7</strong>版本</span>
+          <span><strong>0.7.8</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -5099,6 +5203,76 @@ export function MainApp({ windowLabel }: MainAppProps) {
               <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
               <button type="button" className="danger-action dialog-action" onClick={() => { setDialog(null); void confirmResetSoftware(); }} disabled={busy}>
                 确定重置
+              </button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (dialog.type === "create-subtag") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Sub Tag</p>
+                <h2>新建子目录</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body subtag-dialog-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              <label className="wide-field">
+                子目录名称
+                <input
+                  autoFocus
+                  placeholder="例如：开发工具 或 办公/文档"
+                  value={dialog.value}
+                  onChange={(event) =>
+                    setDialog((current) => (current?.type === "create-subtag" ? { ...current, value: event.target.value } : current))
+                  }
+                />
+              </label>
+
+              <div style={{ marginTop: '16px' }}>
+                <label style={{ fontWeight: '500', marginBottom: '8px', display: 'block' }}>选择要放入该子目录的资源：</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: '6px', padding: '8px' }}>
+                  {filteredItems.map((item) => {
+                    const isChecked = dialog.itemIds.includes(item.id);
+                    return (
+                      <label key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {
+                            const nextItemIds = isChecked
+                              ? dialog.itemIds.filter((id) => id !== item.id)
+                              : [...dialog.itemIds, item.id];
+                            setDialog((current) => (current?.type === "create-subtag" ? { ...current, itemIds: nextItemIds } : current));
+                          }}
+                        />
+                        <Icon name={item.icon} size={15} />
+                        <span>{item.title}</span>
+                      </label>
+                    );
+                  })}
+                  {filteredItems.length === 0 && (
+                    <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>当前分组下暂无资源</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button
+                type="button"
+                className="primary-action"
+                disabled={busy || !dialog.value.trim() || dialog.itemIds.length === 0}
+                onClick={() => void confirmCreateSubTag(dialog.value, dialog.itemIds)}
+              >
+                确定创建
               </button>
             </div>
           </div>

@@ -221,9 +221,9 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('label', { hasText: '显示常用操作' }).locator('input')).toBeChecked();
   });
 
-  test('should show version 0.7.7 on the about page', async ({ page }) => {
+  test('should show version 0.7.8 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.7.7');
+    await expect(page.locator('.about-card')).toContainText('0.7.8');
   });
 });

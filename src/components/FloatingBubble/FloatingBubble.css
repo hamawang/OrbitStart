@@ -85,7 +85,7 @@
   width: 340px;
   max-width: calc(100vw - 32px);
   height: 72px;
-  margin: 16px auto;
+  margin: 16px;
   box-sizing: border-box;
   padding: 6px 9px;
   display: flex;
