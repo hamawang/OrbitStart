@@ -61,7 +61,7 @@ import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSens
 import { createPortal } from "react-dom";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { LocalGalaxyBackdrop } from "./components/LocalGalaxyBackdrop";
 import { TripPanel } from "./components/TripPanel";
 import { Workspaces } from "./components/Workspaces/Workspaces";
@@ -103,6 +103,7 @@ import {
   openObsidianTodoWindow,
   openAuxWindow,
   openDataDirectory,
+  resetSoftware,
   pickIconImage,
   pickObsidianVaultPath,
   pickResourceInput,
@@ -137,7 +138,6 @@ import {
   getGroupHotkeys,
   updateGroupHotkey,
   launchTarget,
-  enterFloatingMode,
   setBubbleSetting
 } from "./lib/native";
 import { FloatingBubble, FloatingBubbleMenu } from "./components/FloatingBubble/FloatingBubble";
@@ -260,7 +260,8 @@ type AppDialogState =
   | { type: "batch-move"; groupId: string }
   | { type: "template"; value: string }
   | { type: "group-hotkey"; groupId: string; value: string }
-  | { type: "app-update"; version: string; body: string; pendingUpdate: any };
+  | { type: "app-update"; version: string; body: string; pendingUpdate: any }
+  | { type: "reset-confirm" };
 
 function getInitialView(): ViewId {
   if (typeof window === "undefined") return "dashboard";
@@ -655,10 +656,10 @@ function pluginDetail(plugin: OrbitPluginManifest) {
       features: ["命令注册", "搜索结果展示", "通知反馈"],
       demo: "在命令面板搜索 hello，可看到本地插件命令。"
     },
-    "trips-search": {
+    "tips-search": {
       author: "OrbitStart Local Plugin",
-      features: ["Trip 内容搜索", "命令面板入口", "打开资源 TripPanel"],
-      demo: "在命令面板输入 Trip 内容关键词，可直接跳到对应资源提示。"
+      features: ["Tip 内容搜索", "命令面板入口", "打开资源 TipPanel"],
+      demo: "在命令面板输入 Tip 内容关键词，可直接跳到对应资源提示。"
     }
   };
 
@@ -684,6 +685,75 @@ function debounce<T extends (...args: any[]) => void>(func: T, wait: number): (.
       func(...args);
     }, wait);
   };
+}
+
+interface SortableKpiCardProps {
+  id: string;
+  children: React.ReactNode;
+}
+
+function SortableKpiCard({ id, children }: SortableKpiCardProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: id,
+  });
+
+  const style: CSSProperties = {
+    transform: transform ? CSS.Transform.toString(transform) : undefined,
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    cursor: "grab",
+    userSelect: "none",
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      className={`kpi-card workbench-kpi-card ${isDragging ? "dragging" : ""}`}
+      {...attributes}
+      {...listeners}
+    >
+      {children}
+    </article>
+  );
+}
+
+interface SortableActionButtonProps {
+  id: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}
+
+function SortableActionButton({ id, onClick, disabled, children }: SortableActionButtonProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: id,
+  });
+
+  const style: CSSProperties = {
+    transform: transform ? CSS.Transform.toString(transform) : undefined,
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    cursor: "grab",
+    userSelect: "none",
+  };
+
+  return (
+    <button
+      ref={setNodeRef}
+      style={style}
+      className={`wide-command ${isDragging ? "dragging" : ""}`}
+      onClick={(e) => {
+        if (isDragging) return;
+        onClick();
+      }}
+      disabled={disabled}
+      {...attributes}
+      {...listeners}
+    >
+      {children}
+    </button>
+  );
 }
 
 interface SortableGroupTabProps {
@@ -884,14 +954,30 @@ function SortableResourceRow({
   );
 }
 
-function FloatingBubbleWrapper() {
+function useBubbleWindowSettings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
     loadSnapshot()
       .then((snap) => setSettings(snap.settings))
       .catch(console.error);
+
+    if (!isTauriRuntime()) return;
+    listen<AppSettings>("orbit://bubble-settings-changed", (event) => {
+      setSettings(event.payload);
+    }).then((dispose) => {
+      unlisten = dispose;
+    }).catch(console.error);
+
+    return () => unlisten?.();
   }, []);
+
+  return [settings, setSettings] as const;
+}
+
+function FloatingBubbleWrapper() {
+  const [settings] = useBubbleWindowSettings();
 
   useEffect(() => {
     document.body.classList.add("bubble-body");
@@ -927,13 +1013,7 @@ function FloatingBubbleWrapper() {
 }
 
 function FloatingBubbleMenuWrapper() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-
-  useEffect(() => {
-    loadSnapshot()
-      .then((snap) => setSettings(snap.settings))
-      .catch(console.error);
-  }, []);
+  const [settings] = useBubbleWindowSettings();
 
   useEffect(() => {
     document.body.classList.add("bubble-body");
@@ -1091,6 +1171,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [backupJson, setBackupJson] = useState("");
   const [backupPath, setBackupPath] = useState("");
   const [dialog, setDialog] = useState<AppDialogState | null>(null);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    listen<string>("orbit://bubble-error", (event) => {
+      setToast(event.payload);
+    }).then((dispose) => {
+      unlisten = dispose;
+    }).catch(console.error);
+    return () => unlisten?.();
+  }, []);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updatingState, setUpdatingState] = useState<"idle" | "downloading" | "applying">("idle");
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
@@ -1123,6 +1214,37 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [todoPanelTasks, setTodoPanelTasks] = useState<ObsidianTask[]>([]);
   const [todoPanelPinned, setTodoPanelPinned] = useState(false);
   const [todoPanelLoading, setTodoPanelLoading] = useState(false);
+
+  const [workbenchStatisticsOrder, setWorkbenchStatisticsOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("storedWorkbenchStatisticsOrder");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length === 4) return parsed;
+      }
+    } catch {}
+    return ["items_count", "enabled_plugins", "active_theme", "safe_mode"];
+  });
+
+  const [workbenchActionsOrder, setWorkbenchActionsOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("storedWorkbenchActionsOrder");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length === 5) return parsed;
+      }
+    } catch {}
+    return ["new_group", "scan_programs", "import_bookmarks", "export_backup", "open_command_panel"];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("storedWorkbenchStatisticsOrder", JSON.stringify(workbenchStatisticsOrder));
+  }, [workbenchStatisticsOrder]);
+
+  useEffect(() => {
+    localStorage.setItem("storedWorkbenchActionsOrder", JSON.stringify(workbenchActionsOrder));
+  }, [workbenchActionsOrder]);
+
   const hotkeyInputRef = useRef<HTMLInputElement>(null);
 
   const [importPreview, setImportPreview] = useState<{
@@ -1343,7 +1465,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   };
 
-  const tripsFeatureEnabled = !pluginStateReady || pluginEnabled("trips-search");
+  const tripsFeatureEnabled = !pluginStateReady || pluginEnabled("tips-search");
   const obsidianFeatureEnabled = !pluginStateReady || (pluginEnabled("core-obsidian") && pluginEnabled("obsidian-search"));
   const workspacesFeatureEnabled = !pluginStateReady || pluginEnabled("workspaces");
   const effectivePlugins = useMemo(
@@ -1440,6 +1562,28 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const handleDragCancel = () => {
     setActiveId(null);
+  };
+
+  const handleStatisticsDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setWorkbenchStatisticsOrder((prev) => {
+      const oldIndex = prev.indexOf(active.id as string);
+      const newIndex = prev.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
+
+  const handleActionsDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setWorkbenchActionsOrder((prev) => {
+      const oldIndex = prev.indexOf(active.id as string);
+      const newIndex = prev.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
   };
 
   function applySnapshot(snapshot: Awaited<ReturnType<typeof loadSnapshot>>) {
@@ -1557,7 +1701,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   useEffect(() => {
     const onOpenTrip = (event: Event) => {
       if (!tripsFeatureEnabled) {
-        setToast("Trips 插件已停用，可在插件管理中重新启用。");
+        setToast("Tips 插件已停用，可在插件管理中重新启用。");
         return;
       }
       const detail = (event as CustomEvent<{ itemId: string; tripId?: string }>).detail;
@@ -2129,7 +2273,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   } as CSSProperties;
   const activeViewMeta: Record<ViewId, { title: string; subtitle: string }> = {
     dashboard: { title: "资源中心", subtitle: "统一管理本地应用、文件、网址与自动化入口" },
-    trips: { title: "Trips", subtitle: "为资源记录快捷键、流程、参数和状态提示" },
+    trips: { title: "Tips", subtitle: "为资源记录快捷键、流程、参数和状态提示" },
     obsidian: { title: "Obsidian", subtitle: "只读索引本地 vault，聚合笔记和 Markdown 待办" },
     workspaces: { title: "工作区管理", subtitle: "分组管理启动项，一键按顺序加载办公/开发环境" },
     settings: { title: "设置中心", subtitle: "系统偏好、插件、主题与数据维护" },
@@ -2834,6 +2978,26 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  function handleResetSoftware() {
+    setDialog({ type: "reset-confirm" });
+  }
+
+  async function confirmResetSoftware() {
+    setBusy(true);
+    try {
+      await resetSoftware();
+      localStorage.clear();
+      setToast("已成功恢复初始化，软件即将重启或重新加载");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
+    } catch (error) {
+      setToast(`恢复初始化失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function copyToast(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -3141,7 +3305,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const navItems: Array<{ id: ViewId; title: string; icon: JSX.Element }> = [
     { id: "dashboard", title: "工作台", icon: <LayoutDashboard size={21} /> },
-    ...(tripsFeatureEnabled ? [{ id: "trips" as const, title: "Trips", icon: <Lightbulb size={21} /> }] : []),
+    ...(tripsFeatureEnabled ? [{ id: "trips" as const, title: "Tips", icon: <Lightbulb size={21} /> }] : []),
     ...(obsidianFeatureEnabled ? [{ id: "obsidian" as const, title: "Obsidian", icon: <NotebookText size={21} /> }] : []),
     ...(workspacesFeatureEnabled ? [{ id: "workspaces" as const, title: "工作区", icon: <Briefcase size={21} /> }] : []),
     { id: "logs", title: "日志", icon: <Database size={21} /> }
@@ -3430,6 +3594,87 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  const renderKpiCard = (id: string) => {
+    switch (id) {
+      case "items_count":
+        return (
+          <SortableKpiCard key="items_count" id="items_count">
+            <span>资源总数</span>
+            <strong>{items.length}</strong>
+            <em>本地入口与链接</em>
+          </SortableKpiCard>
+        );
+      case "enabled_plugins":
+        return (
+          <SortableKpiCard key="enabled_plugins" id="enabled_plugins">
+            <span>启用插件</span>
+            <strong>{enabledPlugins}</strong>
+            <em>{plugins.length} 个可用模块</em>
+          </SortableKpiCard>
+        );
+      case "active_theme":
+        return (
+          <SortableKpiCard key="active_theme" id="active_theme">
+            <span>主题方案</span>
+            <strong>{themes.length}</strong>
+            <em title={activeTheme?.name ?? "默认主题"}>{activeTheme?.name ?? "默认主题"}</em>
+          </SortableKpiCard>
+        );
+      case "safe_mode":
+        return (
+          <SortableKpiCard key="safe_mode" id="safe_mode">
+            <span>安全模式</span>
+            <strong>{settings?.safeMode ? "启用" : "关闭"}</strong>
+            <em>第三方扩展控制</em>
+          </SortableKpiCard>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderActionButton = (id: string) => {
+    switch (id) {
+      case "new_group":
+        return (
+          <SortableActionButton key="new_group" id="new_group" onClick={addCustomGroup} disabled={busy}>
+            <PlusCircle size={17} />
+            <span>新建分组</span>
+          </SortableActionButton>
+        );
+      case "scan_programs":
+        return (
+          <SortableActionButton key="scan_programs" id="scan_programs" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
+            <ScanSearch size={17} />
+            <span>扫描本地程序</span>
+          </SortableActionButton>
+        );
+      case "import_bookmarks":
+        return (
+          <SortableActionButton key="import_bookmarks" id="import_bookmarks" onClick={() => runNativeItemScan("bookmarks")} disabled={busy || !pluginEnabled("core-bookmarks")}>
+            <Bookmark size={17} />
+            <span>导入浏览器书签</span>
+          </SortableActionButton>
+        );
+      case "export_backup":
+        return (
+          <SortableActionButton key="export_backup" id="export_backup" onClick={runExport} disabled={busy}>
+            <Download size={17} />
+            <span>导出数据备份</span>
+          </SortableActionButton>
+        );
+      case "open_command_panel":
+        return (
+          <SortableActionButton key="open_command_panel" id="open_command_panel" onClick={() => setPaletteOpen(true)}>
+            <Command size={17} />
+            <span>打开命令面板</span>
+          </SortableActionButton>
+        );
+      default:
+        return null;
+    }
+  };
+
   const renderDashboard = () => (
     <section className="page-layout dashboard-page">
       <section className="group-tabs-row" aria-label="资源分组">
@@ -3572,28 +3817,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
 
             {workbenchShowStatistics && (
-              <section className="kpi-grid workbench-kpi-grid" aria-label="工作台概览">
-                <article className="kpi-card workbench-kpi-card">
-                  <span>资源总数</span>
-                  <strong>{items.length}</strong>
-                  <em>本地入口与链接</em>
-                </article>
-                <article className="kpi-card workbench-kpi-card">
-                  <span>启用插件</span>
-                  <strong>{enabledPlugins}</strong>
-                  <em>{plugins.length} 个可用模块</em>
-                </article>
-                <article className="kpi-card workbench-kpi-card">
-                  <span>主题方案</span>
-                  <strong>{themes.length}</strong>
-                  <em title={activeTheme?.name ?? "默认主题"}>{activeTheme?.name ?? "默认主题"}</em>
-                </article>
-                <article className="kpi-card workbench-kpi-card">
-                  <span>安全模式</span>
-                  <strong>{settings?.safeMode ? "启用" : "关闭"}</strong>
-                  <em>第三方扩展控制</em>
-                </article>
-              </section>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleStatisticsDragEnd}
+              >
+                <SortableContext items={workbenchStatisticsOrder} strategy={rectSortingStrategy}>
+                  <section className="kpi-grid workbench-kpi-grid" aria-label="工作台概览">
+                    {workbenchStatisticsOrder.map((id) => renderKpiCard(id))}
+                  </section>
+                </SortableContext>
+              </DndContext>
             )}
 
             {workbenchShowStatus && (
@@ -3648,31 +3882,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
             )}
 
             {workbenchShowActions && (
-            <section className="operation-group">
-              <div className="section-head slim">
-                <h2>常用操作</h2>
-              </div>
-              <button className="wide-command" onClick={addCustomGroup} disabled={busy}>
-                <PlusCircle size={17} />
-                <span>新建分组</span>
-              </button>
-              <button className="wide-command" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
-                <ScanSearch size={17} />
-                <span>扫描本地程序</span>
-              </button>
-              <button className="wide-command" onClick={() => runNativeItemScan("bookmarks")} disabled={busy || !pluginEnabled("core-bookmarks")}>
-                <Bookmark size={17} />
-                <span>导入浏览器书签</span>
-              </button>
-              <button className="wide-command" onClick={runExport} disabled={busy}>
-                <Download size={17} />
-                <span>导出数据备份</span>
-              </button>
-              <button className="wide-command" onClick={() => setPaletteOpen(true)}>
-                <Command size={17} />
-                <span>打开命令面板</span>
-              </button>
-            </section>
+              <section className="operation-group">
+                <div className="section-head slim">
+                  <h2>常用操作</h2>
+                </div>
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleActionsDragEnd}
+                >
+                  <SortableContext items={workbenchActionsOrder} strategy={rectSortingStrategy}>
+                    {workbenchActionsOrder.map((id) => renderActionButton(id))}
+                  </SortableContext>
+                </DndContext>
+              </section>
             )}
 
             {workbenchShowToast && (
@@ -3692,9 +3915,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
     const resourceWithTrips = Object.values(tripCounts).filter((value) => value > 0).length;
     return (
       <section className="page-layout trips-page">
-        <section className="kpi-grid trips-kpis" aria-label="Trips 概览">
+        <section className="kpi-grid trips-kpis" aria-label="Tips 概览">
           <article className="kpi-card">
-            <span>Trips 总数</span>
+            <span>Tips 总数</span>
             <strong>{totalTrips}</strong>
             <em>资源使用提示</em>
           </article>
@@ -3710,7 +3933,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </article>
           <article className="kpi-card">
             <span>插件入口</span>
-            <strong>{pluginEnabled("trips-search") ? "启用" : "停用"}</strong>
+            <strong>{pluginEnabled("tips-search") ? "启用" : "停用"}</strong>
             <em>命令面板增强</em>
           </article>
         </section>
@@ -3718,7 +3941,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         <section className="surface-panel trips-surface">
           <div className="section-head">
             <div>
-              <p className="eyebrow">Trip Notes</p>
+              <p className="eyebrow">Tip Notes</p>
               <h2>资源提示笔记</h2>
             </div>
 
@@ -3759,7 +3982,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
             {tripSearchResults.length === 0 && (
               <div className="empty-state trips-empty-state">
                 <Lightbulb size={28} />
-                <strong>还没有匹配的 Trips</strong>
+                <strong>还没有匹配的 Tips</strong>
                 <span>从资源卡片上的灯泡按钮开始记录。</span>
               </div>
             )}
@@ -4467,6 +4690,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span>导入 JSON</span>
         </button>
       </div>
+      <div className="setting-card">
+        <p className="eyebrow">Reset</p>
+        <h2>恢复初始化</h2>
+        <p>清空所有本地数据，包括所有的资源、分组和配置，恢复到初始安装状态。</p>
+        <button className="wide-command danger-btn" onClick={handleResetSoftware}>
+          <RefreshCcw size={17} />
+          <span>恢复初始化</span>
+        </button>
+      </div>
     </section>
   );
 
@@ -4480,7 +4712,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.7.5</strong>版本</span>
+          <span><strong>0.7.7</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -4578,6 +4810,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
       { id: "plugins", title: "插件管理", icon: <Blocks size={18} /> },
       { id: "themes", title: "主题工作室", icon: <Palette size={18} /> },
       ...(obsidianFeatureEnabled ? [{ id: "obsidian" as const, title: "Obsidian", icon: <NotebookText size={18} /> }] : []),
+      ...(isTauriRuntime() ? [{ id: "bubble" as const, title: "悬浮启动球", icon: <CircleDot size={18} /> }] : []),
       { id: "dev", title: "开发套件", icon: <Hammer size={18} /> },
       { id: "data", title: "数据备份", icon: <Database size={18} /> },
       { id: "about", title: "关于", icon: <Info size={18} /> }
@@ -4840,6 +5073,35 @@ export function MainApp({ windowLabel }: MainAppProps) {
               <button type="submit" className="primary-action" disabled={busy}>创建</button>
             </div>
           </form>
+        </section>
+      );
+    }
+
+    if (dialog.type === "reset-confirm") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow" style={{ color: "var(--danger)" }}>Reset Software</p>
+                <h2>恢复软件初始化</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p className="dialog-warning" style={{ margin: 0, padding: "var(--space-3) var(--space-4)", background: "rgba(255, 122, 144, 0.08)", border: "1px solid rgba(255, 122, 144, 0.2)", borderRadius: "8px", color: "var(--danger)", fontSize: "13px", lineHeight: "1.6" }}>
+                确定要恢复初始化吗？这将会清空所有的资源卡片、插件配置和用户自定义分组，且操作不可逆！
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button type="button" className="danger-action dialog-action" onClick={() => { setDialog(null); void confirmResetSoftware(); }} disabled={busy}>
+                确定重置
+              </button>
+            </div>
+          </div>
         </section>
       );
     }
@@ -5486,18 +5748,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
         >
           <Settings size={22} className="settings-gear" />
         </button>
-
-        {isTauriRuntime() && false && (
-          <button 
-            type="button" 
-            className="mini-panel mini-panel-button bubble-mode-btn" 
-            onClick={() => void enterFloatingMode()}
-            title="进入悬浮启动球模式"
-          >
-            <span>悬浮模式</span>
-            <strong>GO</strong>
-          </button>
-        )}
       </aside>
 
       <section className="workspace">
@@ -5563,7 +5813,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   activeView === "dashboard"
                     ? "搜索应用、文件、网址、脚本、插件或标签..."
                     : activeView === "trips"
-                    ? "搜索 Trip 标题、内容、状态或标签..."
+                    ? "搜索 Tip 标题、内容、状态或标签..."
                     : "搜索笔记标题、路径、Vault 或标签..."
                 }
               />

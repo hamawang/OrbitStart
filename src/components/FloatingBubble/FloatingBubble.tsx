@@ -65,6 +65,10 @@ async function logBubbleError(message: string) {
 
 type BubbleAlign = "left" | "right";
 
+function hasTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
 function clampNumber(value: number, min: number, max: number) {
   if (max < min) return min;
   return Math.min(max, Math.max(min, value));
@@ -184,19 +188,22 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
 
   const dragRef = useRef<{
     isDragging: boolean;
+    pointerId: number;
     startScreenX: number;
     startScreenY: number;
     startWindowX: number;
     startWindowY: number;
-    scaleFactor: number;
     hasMoved: boolean;
+    positionSequence: number;
   } | null>(null);
+  const positionQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     setPreviewOpacity(configuredOpacity);
   }, [configuredOpacity]);
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return;
     let unlistenOpacity: (() => void) | undefined;
     let unlistenMenuHover: (() => void) | undefined;
     let unlistenPosition: (() => void) | undefined;
@@ -240,6 +247,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
   }, []);
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return;
     const savedAlign = localStorage.getItem("orbitstart_bubble_align");
 
     if (savedAlign === "left" || savedAlign === "right") {
@@ -288,6 +296,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
   }, [alwaysOnTop, sizeValue]);
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return;
     const preventDefault = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("contextmenu", preventDefault);
     void invoke("refresh_bubble_native_window").catch((error) => {
@@ -348,7 +357,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
     hideMenuTimerRef.current = window.setTimeout(() => {
       if (bubbleHoveredRef.current || menuHoveredRef.current) return;
       void invoke("hide_bubble_menu_window").catch(() => undefined);
-    }, 200);
+    }, 350);
   }
 
   function showMenuNow() {
@@ -385,12 +394,13 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
     const appWin = getCurrentWindow() as any;
     dragRef.current = {
       isDragging: true,
+      pointerId: e.pointerId,
       startScreenX: e.screenX,
       startScreenY: e.screenY,
       startWindowX: Number.NaN,
       startWindowY: Number.NaN,
-      scaleFactor: 1,
       hasMoved: false,
+      positionSequence: 0,
     };
     try {
       const startPos = await appWin.outerPosition();
@@ -412,36 +422,45 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
     }
   };
 
-  const handlePointerMove = async (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) {
       markBubbleHovered();
       return;
     }
-    if (!dragRef.current || !dragRef.current.isDragging) return;
+    if (!drag.isDragging || drag.pointerId !== e.pointerId) return;
 
-    const currentCursor = await cursorPosition();
-    const deltaX = currentCursor.x - dragRef.current.startScreenX;
-    const deltaY = currentCursor.y - dragRef.current.startScreenY;
+    const sequence = ++drag.positionSequence;
+    void cursorPosition().then((currentCursor) => {
+      const activeDrag = dragRef.current;
+      if (activeDrag !== drag || !activeDrag.isDragging || sequence !== activeDrag.positionSequence) return;
+      if (!Number.isFinite(activeDrag.startWindowX) || !Number.isFinite(activeDrag.startWindowY)) return;
 
-    if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
-      dragRef.current.hasMoved = true;
-    }
+      const deltaX = currentCursor.x - activeDrag.startScreenX;
+      const deltaY = currentCursor.y - activeDrag.startScreenY;
+      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+        activeDrag.hasMoved = true;
+      }
+      if (!activeDrag.hasMoved) return;
 
-    if (
-      dragRef.current.hasMoved &&
-      Number.isFinite(dragRef.current.startWindowX) &&
-      Number.isFinite(dragRef.current.startWindowY)
-    ) {
-      const newX = dragRef.current.startWindowX + deltaX;
-      const newY = dragRef.current.startWindowY + deltaY;
-
-      const appWin = getCurrentWindow() as any;
-      await appWin.setPosition(new PhysicalPosition(Math.round(newX), Math.round(newY)));
-    }
+      const newX = activeDrag.startWindowX + deltaX;
+      const newY = activeDrag.startWindowY + deltaY;
+      positionQueueRef.current = positionQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const latestDrag = dragRef.current;
+          if (latestDrag !== drag || !latestDrag.isDragging || sequence !== latestDrag.positionSequence) return;
+          const appWin = getCurrentWindow() as any;
+          await appWin.setPosition(new PhysicalPosition(Math.round(newX), Math.round(newY)));
+        });
+    }).catch((error) => {
+      void logBubbleError(`bubble pointer move failed: ${String(error)}`);
+    });
   };
 
   const handlePointerUp = async (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) {
+    const drag = dragRef.current;
+    if (!drag) {
       if (e.button === 2) {
         e.preventDefault();
         bubbleHoveredRef.current = true;
@@ -450,11 +469,18 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
       }
       return;
     }
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    if (drag.pointerId !== e.pointerId) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    await positionQueueRef.current.catch((error) => {
+      void logBubbleError(`bubble position update failed: ${String(error)}`);
+    });
+    if (dragRef.current !== drag) return;
 
     const appWin = getCurrentWindow() as any;
 
-    if (dragRef.current.hasMoved) {
+    if (drag.hasMoved) {
       const monitor = await currentMonitor();
       if (monitor) {
         const pos = await appWin.outerPosition();
@@ -480,11 +506,24 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
         localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: savedX, y: savedY }));
       }
     } else {
-      await exitFloatingModeAndShowMain();
+      try {
+        await exitFloatingModeAndShowMain();
+      } catch (error) {
+        await logBubbleError(`failed to restore main window from bubble click: ${String(error)}`);
+      }
     }
 
     dragRef.current = null;
     if (bubbleHoveredRef.current) scheduleShowMenu();
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    dragRef.current = null;
   };
 
   const handlePointerEnter = () => {
@@ -529,7 +568,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
           onPointerEnter={handlePointerEnter}
           onPointerLeave={handlePointerLeave}
           onMouseMove={handleMouseMove}
@@ -580,7 +619,11 @@ export function FloatingBubbleMenu({ settings }: FloatingBubbleProps) {
 
   const handleAction = async (action: string) => {
     await emit("orbit://bubble-menu-hover", "leave").catch(() => undefined);
-    await exitFloatingModeAndShowMain(action);
+    try {
+      await exitFloatingModeAndShowMain(action);
+    } catch (error) {
+      await logBubbleError(`bubble menu action failed: ${String(error)}`);
+    }
   };
 
   return (

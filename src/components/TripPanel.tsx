@@ -83,7 +83,7 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
   };
 
   const removeTrip = async (trip: Trip) => {
-    if (!window.confirm(`删除 Trip「${trip.title}」？`)) return;
+    if (!window.confirm(`删除 Tip「${trip.title}」？`)) return;
     setBusy(true);
     try {
       await deleteTrip(trip.id);
@@ -100,14 +100,14 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
       <div className="trip-panel">
         <header className="trip-panel-head">
           <div>
-            <p className="eyebrow">Trips</p>
+            <p className="eyebrow">Tips</p>
             <h2>{item.title}</h2>
             <span>{trips.length} 条提示笔记</span>
           </div>
           <div className="trip-panel-actions">
             <button type="button" className="secondary-action compact-action" onClick={() => setEditingTrip("new")} disabled={busy}>
               <PlusCircle size={16} />
-              新增 Trip
+              新增 Tip
             </button>
             <button type="button" className="icon-action" title="关闭" onClick={onClose}>
               <X size={18} />
@@ -120,7 +120,7 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
             {trips.length === 0 && (
               <button type="button" className="trip-empty" onClick={() => setEditingTrip("new")}>
                 <Lightbulb size={22} />
-                <strong>为这个资源添加第一条 Trip</strong>
+                <strong>为这个资源添加第一条 Tip</strong>
                 <span>记录快捷键、流程、参数或状态。</span>
               </button>
             )}
@@ -175,8 +175,8 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
             ) : (
               <div className="trip-detail-empty">
                 <Lightbulb size={26} />
-                <strong>还没有 Trip</strong>
-                <button type="button" className="primary-action" onClick={() => setEditingTrip("new")}>新增 Trip</button>
+                <strong>还没有 Tip</strong>
+                <button type="button" className="primary-action" onClick={() => setEditingTrip("new")}>新增 Tip</button>
               </div>
             )}
           </article>

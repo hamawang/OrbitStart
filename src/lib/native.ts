@@ -871,6 +871,14 @@ export async function openDataDirectory(): Promise<string> {
   }
 }
 
+export async function resetSoftware(): Promise<void> {
+  try {
+    await invokeNative<void>("reset_software");
+  } catch {
+    window.localStorage.clear();
+  }
+}
+
 export async function openAuxWindow(panel: "settings" | "plugins" | "themes" | "about"): Promise<void> {
   try {
     await invokeNative<void>("open_aux_window", { panel });
@@ -1064,18 +1072,6 @@ export async function setBubbleSetting(key: string, value: string): Promise<Phas
   }
 }
 
-export async function enterFloatingMode(): Promise<void> {
-  try {
-    await invokeNative<void>("enter_floating_mode");
-  } catch {
-    console.log("Mock enter floating mode");
-  }
-}
-
 export async function exitFloatingModeAndShowMain(action?: string): Promise<void> {
-  try {
-    await invokeNative<void>("exit_floating_mode_and_show_main", { action });
-  } catch {
-    console.log("Mock exit floating mode and show main with action:", action);
-  }
+  await invokeNative<void>("exit_floating_mode_and_show_main", { action });
 }

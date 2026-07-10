@@ -26,5 +26,5 @@ npm.cmd run package:plugin -- -PluginPath .\plugins\hello-command
 Current examples:
 
 - `hello-command`: minimal command/search template.
-- `trips-search`: command-palette search bridge for core Trips notes through `ctx.trips`.
+- `tips-search`: command-palette search bridge for core Trips notes through `ctx.trips`.
 - `obsidian-search`: official command-palette bridge for the core Obsidian local task index through `ctx.obsidian`.

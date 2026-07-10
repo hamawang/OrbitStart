@@ -70,7 +70,7 @@ OrbitStart/
 │   └── icons/
 ├── design/                   # Local Galaxy 设计素材（PNG）
 ├── docs/                     # 插件/主题/验证文档
-├── plugins/                  # 示例插件（hello-command / trips-search / obsidian-search）
+├── plugins/                  # 示例插件（hello-command / tips-search / obsidian-search）
 ├── registry/                 # 示例 registry（plugins.json / themes.json / update-channel.json）
 ├── themes/                   # 示例主题包
 ├── tests/                    # Playwright + 自定义 harness

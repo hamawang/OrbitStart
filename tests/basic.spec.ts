@@ -31,6 +31,36 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.rail-button')).not.toHaveCount(0);
   });
 
+  test('should route both dedicated floating-bubble windows without rendering the main app', async ({ page }) => {
+    await page.goto('/?label=floating-bubble');
+    await expect(page.locator('.main-bubble')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('body')).toHaveClass(/bubble-body/);
+    await expect(page.locator('.app-shell')).toHaveCount(0);
+
+    await page.setViewportSize({ width: 372, height: 104 });
+    await page.goto('/?label=floating-bubble-menu');
+    const bubbleMenu = page.locator('.bubble-menu-shell');
+    await expect(bubbleMenu).toBeVisible({ timeout: 5000 });
+    await expect(bubbleMenu).toHaveCSS('width', '340px');
+    await expect(bubbleMenu).toHaveCSS('height', '72px');
+    await expect(page.locator('#root')).toHaveCSS('width', '372px');
+    await expect(bubbleMenu).toHaveCSS('margin-left', '16px');
+    await expect(page.locator('.bubble-menu-action')).toHaveCount(5);
+    await expect(page.locator('.app-shell')).toHaveCount(0);
+  });
+
+  test('should route the floating bubble from the Tauri window label without a URL query', async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'floating-bubble' } }
+      };
+    });
+
+    await page.goto('/');
+    await expect(page.locator('.main-bubble')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('.app-shell')).toHaveCount(0);
+  });
+
   test('should read computed CSS variables on document root', async ({ page }) => {
     const styles = await page.evaluate(() => {
       const el = document.documentElement;
@@ -191,9 +221,9 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('label', { hasText: '显示常用操作' }).locator('input')).toBeChecked();
   });
 
-  test('should show version 0.7.5 on the about page', async ({ page }) => {
+  test('should show version 0.7.7 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.7.5');
+    await expect(page.locator('.about-card')).toContainText('0.7.7');
   });
 });

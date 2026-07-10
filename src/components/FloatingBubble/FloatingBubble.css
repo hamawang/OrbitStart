@@ -82,8 +82,10 @@
 }
 
 .bubble-menu-shell {
-  width: 100vw;
-  height: 100vh;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  height: 72px;
+  margin: 16px auto;
   box-sizing: border-box;
   padding: 6px 9px;
   display: flex;
@@ -96,7 +98,7 @@
   border: 1px solid rgba(55, 214, 191, 0.24);
   border-radius: 999px;
   box-shadow:
-    0 10px 28px rgba(0, 0, 0, 0.36),
+    0 8px 18px rgba(0, 0, 0, 0.36),
     inset 0 0 24px rgba(55, 214, 191, 0.08);
   overflow: hidden;
   user-select: none;

@@ -53,7 +53,7 @@ export function TripEditor({ item, trip, onSave, onCancel }: TripEditorProps) {
       <div className="trip-editor">
         <header className="trip-editor-head">
           <div>
-            <p className="eyebrow">{trip ? "Edit Trip" : "New Trip"}</p>
+            <p className="eyebrow">{trip ? "Edit Tip" : "New Tip"}</p>
             <h3>{item.title}</h3>
           </div>
           <button type="button" className="icon-action" title="关闭" onClick={onCancel}>
