@@ -221,9 +221,117 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('label', { hasText: '显示常用操作' }).locator('input')).toBeChecked();
   });
 
+  test('should progressively render large resource collections', async ({ page }) => {
+    const items = Array.from({ length: 250 }, (_, index) => ({
+      id: `performance-item-${index}`,
+      title: `Performance Item ${String(index).padStart(3, '0')}`,
+      subtitle: `C:\\Performance\\item-${index}.exe`,
+      kind: 'app',
+      group: 'apps',
+      target: `C:\\Performance\\item-${index}.exe`,
+      aliases: [],
+      tags: ['performance'],
+      subTag: '',
+      icon: 'AppWindow',
+      accent: '#5cc8ff',
+      favorite: false,
+      launchCount: 0,
+      sortOrder: index
+    }));
+    await page.evaluate((largeCollection) => {
+      window.localStorage.setItem('orbitstart.browser.items', JSON.stringify(largeCollection));
+    }, items);
+    await page.reload();
+    await page.waitForSelector('.app-shell', { timeout: 10000 });
+    await page.locator('[data-group-id="apps"] .group-tab-btn').click();
+
+    await expect(page.locator('.resource-panel .section-head h2')).toContainText('250 个资源');
+    await expect(page.locator('.resource-row')).toHaveCount(120);
+    await expect(page.locator('.resource-progressive-load')).toContainText('120 / 250');
+
+    await page.locator('.resource-progressive-load button').click();
+    await expect(page.locator('.resource-row')).toHaveCount(240);
+    await expect(page.locator('.resource-progressive-load')).toContainText('240 / 250');
+  });
+
   test('should show version 0.7.8 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
     await expect(page.locator('.about-card')).toContainText('0.7.8');
+  });
+
+  test('should display and interact with the sub-directory selection modal', async ({ page }) => {
+    await page.evaluate(() => {
+      window.localStorage.setItem('orbitstart.browser.items', JSON.stringify([
+        {
+          id: 'test-app-1',
+          title: 'Test App 1',
+          subtitle: 'C:\\Test\\1.exe',
+          kind: 'app',
+          group: 'apps',
+          target: 'C:\\Test\\1.exe',
+          aliases: [],
+          tags: ['manual'],
+          subTag: '工具/编辑器',
+          icon: 'AppWindow',
+          accent: '#5cc8ff',
+          favorite: false,
+          launchCount: 0
+        },
+        {
+          id: 'test-app-2',
+          title: 'Test App 2',
+          subtitle: 'C:\\Test\\2.exe',
+          kind: 'app',
+          group: 'apps',
+          target: 'C:\\Test\\2.exe',
+          aliases: [],
+          tags: ['manual'],
+          subTag: '游戏/角色扮演',
+          icon: 'AppWindow',
+          accent: '#5cc8ff',
+          favorite: false,
+          launchCount: 0
+        }
+      ]));
+    });
+
+    await page.reload();
+    await page.waitForSelector('.app-shell', { timeout: 10000 });
+    await page.locator('[data-group-id="apps"] .group-tab-btn').click();
+
+    // Open context menu and select '编辑资源'
+    const resource = page.locator('.resource-row[data-resource-id="test-app-1"]').first();
+    const box = await resource.boundingBox();
+    expect(box).not.toBeNull();
+    await resource.dispatchEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: Math.round(box!.x + 12),
+      clientY: Math.round(box!.y + 12)
+    });
+    await page.locator('.context-menu button', { hasText: '编辑资源' }).click();
+    await expect(page.locator('.modal-panel h2', { hasText: '编辑资源' })).toBeVisible();
+
+    // Click select subtag button
+    await page.locator('.modal-panel button', { hasText: '选择子目录' }).click();
+    await expect(page.locator('.dialog-panel h3', { hasText: '选择子目录' })).toBeVisible();
+
+    // Verify list
+    await expect(page.locator('.dialog-body button', { hasText: '工具/编辑器' })).toBeVisible();
+    await expect(page.locator('.dialog-body button', { hasText: '游戏/角色扮演' })).toBeVisible();
+
+    // Test search
+    await page.locator('input[placeholder="搜索已创建的子目录..."]').fill('编辑器');
+    await expect(page.locator('.dialog-body button', { hasText: '工具/编辑器' })).toBeVisible();
+    await expect(page.locator('.dialog-body button', { hasText: '游戏/角色扮演' })).toHaveCount(0);
+
+    // Select the option
+    await page.locator('.dialog-body button', { hasText: '工具/编辑器' }).click();
+    await expect(page.locator('.dialog-panel h3', { hasText: '选择子目录' })).toHaveCount(0);
+
+    // Cancel edit
+    await page.locator('.modal-actions button', { hasText: '取消' }).click();
   });
 });

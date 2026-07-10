@@ -1,6 +1,7 @@
 import { phase0Snapshot } from "../data/catalog";
 import type {
   ExportResult,
+  ImportResult,
   ObsidianNoteIndex,
   ObsidianScanResult,
   ObsidianSearchResult,
@@ -26,6 +27,10 @@ const obsidianTasksKey = "orbitstart.browser.obsidian.tasks";
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args);
+}
+
+function hasNativeBridge(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function readBrowserItems(): OrbitItem[] {
@@ -677,7 +682,8 @@ export async function revealTarget(target: string): Promise<string> {
 export async function scanShortcuts(): Promise<OrbitItem[]> {
   try {
     return await invokeNative<OrbitItem[]>("scan_shortcuts");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return readBrowserItems();
   }
 }
@@ -685,7 +691,8 @@ export async function scanShortcuts(): Promise<OrbitItem[]> {
 export async function scanBrowserBookmarks(): Promise<OrbitItem[]> {
   try {
     return await invokeNative<OrbitItem[]>("scan_browser_bookmarks");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return readBrowserItems();
   }
 }
@@ -844,14 +851,22 @@ export async function exportCatalogJson(): Promise<ExportResult> {
   }
 }
 
-export async function importCatalogJson(json: string): Promise<OrbitItem[]> {
+export async function importCatalogJson(json: string): Promise<ImportResult> {
   try {
-    return await invokeNative<OrbitItem[]>("import_catalog_json", { json });
-  } catch {
+    return await invokeNative<ImportResult>("import_catalog_json", { json });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const parsed = JSON.parse(json) as { items?: OrbitItem[] };
     const items = parsed.items ?? [];
     writeBrowserItems(items);
-    return items;
+    return {
+      imported: items.length,
+      inserted: items.length,
+      updated: 0,
+      skipped: 0,
+      tripsImported: 0,
+      itemIds: items.map((item) => item.id)
+    };
   }
 }
 
@@ -920,7 +935,8 @@ export async function updateGlobalHotkey(oldHotkey: string, newHotkey: string): 
 export async function previewScanShortcuts(): Promise<OrbitItemInput[]> {
   try {
     return await invokeNative<OrbitItemInput[]>("preview_scan_shortcuts");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return [
       {
         title: "示例本地程序 (Uninstall)",
@@ -953,7 +969,8 @@ export async function previewScanShortcuts(): Promise<OrbitItemInput[]> {
 export async function previewScanBrowserBookmarks(): Promise<OrbitItemInput[]> {
   try {
     return await invokeNative<OrbitItemInput[]>("preview_scan_browser_bookmarks");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return [
       {
         title: "Baidu",
@@ -983,10 +1000,11 @@ export async function previewScanBrowserBookmarks(): Promise<OrbitItemInput[]> {
   }
 }
 
-export async function importScannedItems(items: OrbitItemInput[]): Promise<OrbitItem[]> {
+export async function importScannedItems(items: OrbitItemInput[]): Promise<ImportResult> {
   try {
-    return await invokeNative<OrbitItem[]>("import_scanned_items", { items });
-  } catch {
+    return await invokeNative<ImportResult>("import_scanned_items", { items });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const current = readBrowserItems();
     const created = items.map((input) => {
       return {
@@ -997,7 +1015,24 @@ export async function importScannedItems(items: OrbitItemInput[]): Promise<Orbit
     });
     const nextItems = [...created, ...current];
     writeBrowserItems(nextItems);
-    return nextItems;
+    return {
+      imported: created.length,
+      inserted: created.length,
+      updated: 0,
+      skipped: 0,
+      tripsImported: 0,
+      itemIds: created.map((item) => item.id)
+    };
+  }
+}
+
+export async function hydrateShortcutIcons(itemIds: string[]): Promise<number> {
+  if (itemIds.length === 0) return 0;
+  try {
+    return await invokeNative<number>("hydrate_shortcut_icons", { itemIds });
+  } catch (error) {
+    console.warn("Failed to hydrate shortcut icons", error);
+    return 0;
   }
 }
 

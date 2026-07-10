@@ -57,7 +57,7 @@ import {
 } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
+import { DndContext, closestCenter, pointerWithin, rectIntersection, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -116,6 +116,7 @@ import {
   previewScanShortcuts,
   previewScanBrowserBookmarks,
   importScannedItems,
+  hydrateShortcutIcons,
   searchTrips,
   setTodoWindowAlwaysOnTop,
   toggleObsidianTaskCompletion,
@@ -162,6 +163,8 @@ import type {
 import type { ScenarioTag, ScenarioGroup } from "./lib/onboarding";
 
 const appIconSrc = new URL("../design/app-icons/orbitstart-first-icon-ui.png", import.meta.url).href;
+const RESOURCE_RENDER_PAGE_SIZE = 120;
+const IMPORT_PREVIEW_PAGE_SIZE = 100;
 
 const tripStatusLabels: Record<string, string> = {
   todo: "待处理",
@@ -841,8 +844,14 @@ function DroppableSubTagSection({ path, children }: { path: string; children: Re
     <div
       ref={setNodeRef}
       className={`subtag-droppable-wrapper ${isOver ? "drag-over" : ""}`}
+      style={{ position: "relative" }}
     >
       {children}
+      {isOver && (
+        <div className="droppable-overlay">
+          <span className="droppable-overlay-text">移动到此处</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -855,8 +864,14 @@ function DroppableRootSection({ children, displayMode }: { children: React.React
     <div
       ref={setNodeRef}
       className={`root-droppable-wrapper resource-list display-${displayMode} ${isOver ? "drag-over" : ""}`}
+      style={{ position: "relative" }}
     >
       {children}
+      {isOver && (
+        <div className="droppable-overlay">
+          <span className="droppable-overlay-text">移动到此处</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1189,6 +1204,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     return localStorage.getItem("orbitstart.dashboard.hide_workbench") === "true";
   });
   const [query, setQuery] = useState("");
+  const [resourceRenderLimit, setResourceRenderLimit] = useState(RESOURCE_RENDER_PAGE_SIZE);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [pluginResults, setPluginResults] = useState<SearchResult[]>([]);
@@ -1200,6 +1216,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [backupJson, setBackupJson] = useState("");
   const [backupPath, setBackupPath] = useState("");
   const [dialog, setDialog] = useState<AppDialogState | null>(null);
+  const [subTagSelectModal, setSubTagSelectModal] = useState<{
+    isOpen: boolean;
+    currentValue: string;
+    onSelect: (tag: string) => void;
+  } | null>(null);
+  const [subTagSelectSearch, setSubTagSelectSearch] = useState("");
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -1281,6 +1303,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     items: OrbitItemInput[];
     selectedIndices: Set<number>;
     searchQuery: string;
+    visibleCount: number;
     onClose?: () => void;
   } | null>(null);
   const [pluginHostRevision, setPluginHostRevision] = useState(0);
@@ -1574,6 +1597,78 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setActiveId(event.active.id as string);
   };
 
+  const customCollisionDetection = (args: any) => {
+    // 1. Get collisions from both pointerWithin and rectIntersection
+    const pointerCollisions = pointerWithin(args);
+    const rectCollisions = rectIntersection(args);
+    
+    // Merge them to ensure active card overlap is detected even if mouse pointer is outside
+    let collisions = [...pointerCollisions];
+    for (const rc of rectCollisions) {
+      if (!collisions.some((c) => c.id === rc.id)) {
+        collisions.push(rc);
+      }
+    }
+    
+    // Fall back to closestCenter if no collisions found
+    if (collisions.length === 0) {
+      collisions = closestCenter(args);
+    }
+    
+    if (collisions.length === 0) return [];
+    
+    const resolvedCollisions = [...collisions];
+    const activeId = args.active.id;
+    const activeItem = items.find((item) => item.id === activeId);
+    const activeSubTag = activeItem ? (activeItem.subTag || "") : "";
+    
+    for (const collision of collisions) {
+      const collisionIdStr = String(collision.id);
+      
+      // If it's a resource card collision
+      if (!collisionIdStr.startsWith("droppable-subtag-")) {
+        const collidedItem = items.find((item) => item.id === collisionIdStr);
+        if (collidedItem) {
+          const itemSubTag = collidedItem.subTag || "";
+          
+          // Only trigger overlay if it is a DIFFERENT directory
+          if (itemSubTag !== activeSubTag) {
+            const parentContainerId = itemSubTag === "" 
+              ? "droppable-subtag-root" 
+              : `droppable-subtag-${itemSubTag}`;
+            
+            // Add the parent container to the collisions list if not already present
+            if (!resolvedCollisions.some((c) => c.id === parentContainerId)) {
+              const parentContainer = args.droppableContainers.find((c: any) => c.id === parentContainerId);
+              if (parentContainer) {
+                resolvedCollisions.push({
+                  id: parentContainerId,
+                  data: { droppableContainer: parentContainer }
+                });
+              }
+            }
+          }
+        }
+      } else {
+        // If it's a directory container collision directly,
+        // we should check if it's the active item's own directory.
+        const targetSubTag = collisionIdStr === "droppable-subtag-root" 
+          ? "" 
+          : collisionIdStr.replace("droppable-subtag-", "");
+          
+        if (targetSubTag === activeSubTag) {
+          // It's the same directory, remove it from resolvedCollisions so it doesn't show the overlay
+          const index = resolvedCollisions.findIndex((c) => c.id === collisionIdStr);
+          if (index !== -1) {
+            resolvedCollisions.splice(index, 1);
+          }
+        }
+      }
+    }
+    
+    return resolvedCollisions;
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const { active, over } = event;
@@ -1665,6 +1760,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     } else {
       setHotkeysBoundToGroup({});
     }
+    return snapshot;
   }
 
   async function refreshTripCounts(scopeItems = items) {
@@ -1928,7 +2024,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
         setLocalAuxPanel(panel as AuxPanel);
         setSettingsSection(sectionFromPanel(panel as AuxPanel));
       },
-      refreshResources: reload,
+      refreshResources: async () => {
+        await reload();
+      },
       toggleSafeMode,
       focusGroup: (groupId) => setActiveGroup(groupId)
     });
@@ -2279,16 +2377,39 @@ export function MainApp({ windowLabel }: MainAppProps) {
     });
   }, [activeGroup, items, plugins, query, localOrder]);
 
-  const rootResourceItems = useMemo(
-    () => filteredItems.filter((item) => !cleanSubTag(item.subTag)),
-    [filteredItems]
+  useEffect(() => {
+    setResourceRenderLimit(RESOURCE_RENDER_PAGE_SIZE);
+  }, [activeGroup, query, items.length]);
+
+  const renderedItems = useMemo(
+    () => filteredItems.slice(0, resourceRenderLimit),
+    [filteredItems, resourceRenderLimit]
   );
 
-  const subTagTree = useMemo(() => buildSubTagTree(filteredItems), [filteredItems]);
+  const rootResourceItems = useMemo(
+    () => renderedItems.filter((item) => !cleanSubTag(item.subTag)),
+    [renderedItems]
+  );
+
+  const subTagTree = useMemo(() => buildSubTagTree(renderedItems), [renderedItems]);
 
   const favoriteItems = filteredItems.filter((item) => item.favorite);
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const itemByTarget = useMemo(() => new Map(items.map((item) => [item.target, item])), [items]);
+  const existingSubTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const item of items) {
+      const parts = subTagParts(item.subTag);
+      if (parts.length > 0) {
+        let currentPath = "";
+        for (const part of parts) {
+          currentPath = currentPath ? `${currentPath}/${part}` : part;
+          tags.add(currentPath);
+        }
+      }
+    }
+    return Array.from(tags).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [items]);
   const enabledPlugins = plugins.filter((plugin) => plugin.enabled).length;
   const densityValue = useMemo(() => {
     if (!settings?.density) return 0;
@@ -2658,6 +2779,24 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  async function confirmBatchMoveToSubTag(subTag: string) {
+    if (selectedIds.length === 0) return;
+    setBusy(true);
+    try {
+      const selected = items.filter((item) => selectedIds.includes(item.id));
+      for (const item of selected) {
+        await updateItem({ ...item, subTag });
+      }
+      exitBatchMode();
+      await reload();
+      setToast(subTag === "" ? "已将选中资源移回主目录" : `已将选中资源成功批量移动至子目录：${subTag}`);
+    } catch (error) {
+      setToast(`批量移动至子目录失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function toggleSubTagCollapsed(path: string) {
     const cleanPath = cleanSubTag(path);
     setCollapsedSubTagPaths((current) =>
@@ -2833,6 +2972,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         items: scanned,
         selectedIndices,
         searchQuery: "",
+        visibleCount: IMPORT_PREVIEW_PAGE_SIZE,
         onClose
       });
       setToast(kind === "shortcuts" ? "本地程序扫描已就绪，请选择导入" : "浏览器书签扫描已就绪，请选择导入");
@@ -2866,11 +3006,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
     setBusy(true);
     try {
-      const nextItems = await importCatalogJson(backupJson);
-      setItems(nextItems);
+      const result = await importCatalogJson(backupJson);
       setBackupOpen(false);
-      await reload();
-      setToast(`导入完成：当前 ${nextItems.length} 个资源`);
+      const snapshot = await reload();
+      const tripCopy = result.tripsImported > 0 ? `，恢复 ${result.tripsImported} 条记录` : "";
+      const skippedCopy = result.skipped > 0 ? `，跳过 ${result.skipped} 个重复项` : "";
+      setToast(`导入完成：新增 ${result.inserted} 个、恢复 ${result.updated} 个资源${tripCopy}${skippedCopy}，当前 ${snapshot.items.length} 个资源`);
     } catch (error) {
       setToast(`导入失败：${String(error)}`);
     } finally {
@@ -3835,6 +3976,21 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button type="button" onClick={createWorkspaceFromActiveGroup} disabled={busy || selectedIds.length === 0}>创建为工作区</button>
               )}
               <button type="button" onClick={batchMoveSelected} disabled={busy || selectedIds.length === 0}>加标签</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSubTagSelectModal({
+                    isOpen: true,
+                    currentValue: "",
+                    onSelect: (val) => {
+                      confirmBatchMoveToSubTag(val);
+                    }
+                  });
+                }}
+                disabled={busy || selectedIds.length === 0}
+              >
+                移动至子目录
+              </button>
               <button type="button" className="danger-action" onClick={batchDeleteSelected} disabled={busy || selectedIds.length === 0}>删除</button>
             </div>
           )}
@@ -3842,7 +3998,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <div className={`resource-list display-${settings?.displayMode ?? "simple"}`}>
             <DndContext
               sensors={batchMode ? [] : sensors}
-              collisionDetection={closestCenter}
+              collisionDetection={customCollisionDetection}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
               onDragCancel={handleDragCancel}
@@ -3867,7 +4023,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   </section>
                 </>
               ) : (
-                renderResourceCards(filteredItems)
+                renderResourceCards(renderedItems)
               )}
               {createPortal(
                 <DragOverlay>
@@ -3901,6 +4057,18 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 document.body
               )}
             </DndContext>
+            {renderedItems.length < filteredItems.length && (
+              <div className="resource-progressive-load">
+                <span>已显示 {renderedItems.length} / {filteredItems.length} 个资源</span>
+                <button
+                  type="button"
+                  className="secondary-action compact-action"
+                  onClick={() => setResourceRenderLimit((current) => current + RESOURCE_RENDER_PAGE_SIZE)}
+                >
+                  继续加载
+                </button>
+              </div>
+            )}
             {filteredItems.length === 0 && (
               <div className="empty-state">
                 <Search size={28} />
@@ -5474,7 +5642,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const renderImportPreviewDialog = () => {
     if (!importPreview) return null;
 
-    const { kind, items, selectedIndices, searchQuery } = importPreview;
+    const { kind, items, selectedIndices, searchQuery, visibleCount } = importPreview;
 
     const handleClose = () => {
       setImportPreview(null);
@@ -5494,6 +5662,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           item.target.toLowerCase().includes(q)
         );
       });
+    const visibleItemsWithOriginalIndex = filteredItemsWithOriginalIndex.slice(0, visibleCount);
     const filterReasons = buildImportFilterReasons(kind, items);
 
     // Toggle a single scanned entry while preserving automatic filter hints.
@@ -5539,11 +5708,19 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setBusy(true);
       setToast("正在批量导入项目，请稍候...");
       try {
-        const nextItems = await importScannedItems(selectedItems);
-        setItems(nextItems);
+        const result = await importScannedItems(selectedItems);
         await reload();
-        setToast(`成功导入 ${selectedItems.length} 个资源`);
+        const skippedCopy = result.skipped > 0 ? `，跳过 ${result.skipped} 个重复项` : "";
+        setToast(`成功处理 ${result.imported} 个资源（新增 ${result.inserted}，更新 ${result.updated}）${skippedCopy}`);
         handleClose();
+        if (kind === "shortcuts" && result.itemIds.length > 0) {
+          void hydrateShortcutIcons(result.itemIds).then(async (updated) => {
+            if (updated > 0) {
+              await reload();
+              setToast(`资源导入完成，已在后台补全 ${updated} 个程序图标`);
+            }
+          });
+        }
       } catch (error) {
         setToast(`导入失败：${String(error)}`);
       } finally {
@@ -5572,7 +5749,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
               type="text"
               placeholder="搜索扫描出的项目名称或路径..."
               value={searchQuery}
-              onChange={(e) => setImportPreview({ ...importPreview, searchQuery: e.target.value })}
+              onChange={(e) => setImportPreview({
+                ...importPreview,
+                searchQuery: e.target.value,
+                visibleCount: IMPORT_PREVIEW_PAGE_SIZE
+              })}
             />
           </div>
 
@@ -5597,37 +5778,51 @@ export function MainApp({ windowLabel }: MainAppProps) {
             {filteredItemsWithOriginalIndex.length === 0 ? (
               <div className="empty-preview">没有找到匹配的项目</div>
             ) : (
-              filteredItemsWithOriginalIndex.map(({ item, index }) => {
-                const filterReason = filterReasons.get(index);
-                const isUninstall = filterReason?.code === "uninstall";
-                const isFiltered = Boolean(filterReason);
-                const isChecked = selectedIndices.has(index);
-                return (
-                  <div
-                    key={index}
-                    className={`import-preview-item ${isFiltered ? "is-filtered" : ""} ${isUninstall ? "is-uninstall" : ""} ${isChecked ? "is-checked" : ""}`}
-                    onClick={() => handleToggleItem(index)}
+              <>
+                {visibleItemsWithOriginalIndex.map(({ item, index }) => {
+                  const filterReason = filterReasons.get(index);
+                  const isUninstall = filterReason?.code === "uninstall";
+                  const isFiltered = Boolean(filterReason);
+                  const isChecked = selectedIndices.has(index);
+                  return (
+                    <div
+                      key={index}
+                      className={`import-preview-item ${isFiltered ? "is-filtered" : ""} ${isUninstall ? "is-uninstall" : ""} ${isChecked ? "is-checked" : ""}`}
+                      onClick={() => handleToggleItem(index)}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => {}}
+                      />
+                      <div className="item-icon-wrapper" style={{ color: item.accent }}>
+                        <Icon name={item.icon} size={18} />
+                      </div>
+                      <div className="item-info">
+                        <div className="item-title">
+                          {item.title}
+                          {filterReason && <span className="filter-tag">{filterReason.label}</span>}
+                        </div>
+                        <div className="item-subtitle" title={item.subtitle}>
+                          {item.subtitle}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {visibleItemsWithOriginalIndex.length < filteredItemsWithOriginalIndex.length && (
+                  <button
+                    type="button"
+                    className="import-load-more"
+                    onClick={() => setImportPreview({
+                      ...importPreview,
+                      visibleCount: visibleCount + IMPORT_PREVIEW_PAGE_SIZE
+                    })}
                   >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => {}}
-                    />
-                    <div className="item-icon-wrapper" style={{ color: item.accent }}>
-                      <Icon name={item.icon} size={18} />
-                    </div>
-                    <div className="item-info">
-                      <div className="item-title">
-                        {item.title}
-                        {filterReason && <span className="filter-tag">{filterReason.label}</span>}
-                      </div>
-                      <div className="item-subtitle" title={item.subtitle}>
-                        {item.subtitle}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+                    继续显示（{visibleItemsWithOriginalIndex.length} / {filteredItemsWithOriginalIndex.length}）
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -6020,6 +6215,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </section>
       )}
 
+
+
       {dialog && renderAppDialog()}
 
       {tripsFeatureEnabled && tripPanelItem && (
@@ -6275,11 +6472,59 @@ export function MainApp({ windowLabel }: MainAppProps) {
               </label>
               <label className="wide-field">
                 子目录（可选）
-                <input
-                  value={editor.input.subTag ?? ""}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, subTag: event.target.value } })}
-                  placeholder="例如：影音工具 或 影音工具/播放器"
-                />
+                <div className="subtag-select-wrapper" style={{ display: "flex", gap: "8px" }}>
+                  <input
+                    value={editor.input.subTag ? `${editor.input.subTag}` : "无（处于主目录）"}
+                    readOnly
+                    placeholder="未选择子目录"
+                    style={{ cursor: "pointer", flex: 1, caretColor: "transparent" }}
+                    onClick={() => {
+                      setSubTagSelectModal({
+                        isOpen: true,
+                        currentValue: editor.input.subTag ?? "",
+                        onSelect: (val) => {
+                          setEditor({
+                            ...editor,
+                            input: { ...editor.input, subTag: val }
+                          });
+                        }
+                      });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    onClick={() => {
+                      setSubTagSelectModal({
+                        isOpen: true,
+                        currentValue: editor.input.subTag ?? "",
+                        onSelect: (val) => {
+                          setEditor({
+                            ...editor,
+                            input: { ...editor.input, subTag: val }
+                          });
+                        }
+                      });
+                    }}
+                  >
+                    选择子目录
+                  </button>
+                  {(editor.input.subTag ?? "") !== "" && (
+                    <button
+                      type="button"
+                      className="secondary-action danger-action"
+                      style={{ padding: "0 12px" }}
+                      onClick={() => {
+                        setEditor({
+                          ...editor,
+                          input: { ...editor.input, subTag: "" }
+                        });
+                      }}
+                    >
+                      移回主目录
+                    </button>
+                  )}
+                </div>
               </label>
               <label>
                 颜色
@@ -6484,6 +6729,132 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </div>
         </div>
+      )}
+      {subTagSelectModal?.isOpen && createPortal(
+        <section
+          className="dialog-backdrop"
+          role="dialog"
+          aria-modal="true"
+          style={{ zIndex: 11000 }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSubTagSelectModal(null);
+              setSubTagSelectSearch("");
+            }
+          }}
+        >
+          <div className="dialog-panel" style={{ maxWidth: "420px", width: "100%" }}>
+            <div className="dialog-head">
+              <h3>选择子目录</h3>
+              <button
+                type="button"
+                className="close-button"
+                onClick={() => {
+                  setSubTagSelectModal(null);
+                  setSubTagSelectSearch("");
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body" style={{ display: "flex", flexDirection: "column", gap: "12px", maxHeight: "400px", overflowY: "auto" }}>
+              <div className="search-shell" style={{ margin: 0, width: "100%", boxSizing: "border-box" }}>
+                <Search size={16} />
+                <input
+                  value={subTagSelectSearch}
+                  onChange={(e) => setSubTagSelectSearch(e.target.value)}
+                  placeholder="搜索已创建的子目录..."
+                  style={{ fontSize: "14px", width: "100%" }}
+                  autoFocus
+                />
+                {subTagSelectSearch && (
+                  <button type="button" title="清空" onClick={() => setSubTagSelectSearch("")} className="palette-clear-btn" style={{ right: "8px" }}>
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "4px" }}>
+                {/* None Option */}
+                {(!subTagSelectSearch || "无（处于主目录）".includes(subTagSelectSearch.toLowerCase())) && (
+                  <button
+                    type="button"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "10px 14px",
+                      background: "rgba(255, 255, 255, 0.03)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      color: "var(--foreground-muted)",
+                      fontWeight: subTagSelectModal.currentValue === "" ? "bold" : "normal"
+                    }}
+                    onClick={() => {
+                      subTagSelectModal.onSelect("");
+                      setSubTagSelectModal(null);
+                      setSubTagSelectSearch("");
+                    }}
+                  >
+                    <span>无（移回主目录/根目录）</span>
+                    {subTagSelectModal.currentValue === "" && <span style={{ color: "var(--accent)" }}>✓</span>}
+                  </button>
+                )}
+
+                {existingSubTags
+                  .filter((tag) => tag.toLowerCase().includes(subTagSelectSearch.toLowerCase()))
+                  .map((tag) => {
+                    const isSelected = subTagSelectModal.currentValue === tag;
+                    return (
+                      <button
+                        type="button"
+                        key={tag}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "10px 14px",
+                          background: isSelected ? "rgba(255, 255, 255, 0.1)" : "rgba(255, 255, 255, 0.03)",
+                          border: isSelected ? "1px solid var(--accent)" : "1px solid rgba(255, 255, 255, 0.08)",
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          color: "var(--foreground)",
+                          fontWeight: isSelected ? "bold" : "normal"
+                        }}
+                        onClick={() => {
+                          subTagSelectModal.onSelect(tag);
+                          setSubTagSelectModal(null);
+                          setSubTagSelectSearch("");
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ opacity: 0.6 }}>📂</span>
+                          <span>{tag}</span>
+                        </div>
+                        {isSelected && <span style={{ color: "var(--accent)" }}>✓</span>}
+                      </button>
+                    );
+                  })}
+
+                {existingSubTags.filter((tag) => tag.toLowerCase().includes(subTagSelectSearch.toLowerCase())).length === 0 &&
+                  (subTagSelectSearch ? (
+                    <div style={{ textAlign: "center", padding: "20px", color: "var(--foreground-muted)", fontSize: "14px" }}>
+                      没有找到匹配的子目录
+                    </div>
+                  ) : existingSubTags.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "20px", color: "var(--foreground-muted)", fontSize: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <span>当前没有已创建的子目录</span>
+                      <small style={{ fontSize: "12px", opacity: 0.8 }}>请先在主页以‘添加子目录’创建子目录。</small>
+                    </div>
+                  ) : null)}
+              </div>
+            </div>
+          </div>
+        </section>,
+        document.body
       )}
       {contextMenu && renderContextMenu()}
     </>

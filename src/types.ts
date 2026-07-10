@@ -34,6 +34,15 @@ export interface OrbitItemInput {
   favorite: boolean;
 }
 
+export interface ImportResult {
+  imported: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  tripsImported: number;
+  itemIds: string[];
+}
+
 export type TripCategory = "shortcut" | "workflow" | "note" | "status" | "reference";
 export type TripStatus = "todo" | "in-progress" | "done" | "needs-update";
 

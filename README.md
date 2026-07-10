@@ -102,7 +102,7 @@ OrbitStart 面向普通用户的使用方式是从 **GitHub Releases** 下载 Wi
 
 ### Import Flow
 
-扫描本地程序和浏览器书签，在导入前预览、筛选和排除卸载项。
+扫描本地程序和浏览器书签，在导入前预览、筛选和排除卸载项。0.7.8 使用原生增量快捷方式扫描，批量导入通过单事务提交，程序图标在导入完成后于后台补全，数百条资源也不会一次性阻塞界面。
 
 <img width="311" height="314" alt="image" src="https://github.com/user-attachments/assets/ead9c276-3c63-4275-8fda-4524d3928bdf" />
 

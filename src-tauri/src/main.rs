@@ -3,7 +3,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ use tauri_plugin_global_shortcut::ShortcutState;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrbitGroup {
     id: String,
@@ -200,6 +200,8 @@ struct CatalogExport {
     exported_at: String,
     items: Vec<OrbitItem>,
     #[serde(default)]
+    groups: Vec<OrbitGroup>,
+    #[serde(default)]
     trips: Vec<Trip>,
     #[serde(default)]
     plugins: Vec<PluginManifest>,
@@ -314,16 +316,43 @@ struct ExportResult {
     json: String,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ShortcutInfo {
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportResult {
+    imported: usize,
+    inserted: usize,
+    updated: usize,
+    skipped: usize,
+    trips_imported: usize,
+    item_ids: Vec<String>,
+}
+
+#[derive(Clone)]
+struct ShortcutCacheEntry {
+    shortcut_path: String,
+    modified_at: i64,
+    file_size: i64,
     title: String,
-    shortcut: String,
     target_path: String,
     arguments: String,
     working_directory: String,
     icon_location: String,
-    icon_base64: String,
+    icon_data: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct IconHydrationInput {
+    key: String,
+    shortcut: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct IconHydrationOutput {
+    key: String,
+    icon: String,
 }
 
 fn now_string() -> String {
@@ -446,6 +475,19 @@ fn init_db(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_trips_item_id ON trips(item_id);
         CREATE INDEX IF NOT EXISTS idx_trips_updated_at ON trips(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS shortcut_scan_cache (
+            shortcut_path TEXT PRIMARY KEY,
+            modified_at INTEGER NOT NULL,
+            file_size INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            target_path TEXT NOT NULL DEFAULT '',
+            arguments TEXT NOT NULL DEFAULT '',
+            working_directory TEXT NOT NULL DEFAULT '',
+            icon_location TEXT NOT NULL DEFAULT '',
+            icon_data TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS obsidian_vaults (
             id TEXT PRIMARY KEY,
@@ -2574,11 +2616,16 @@ fn merge_existing_item(
     } else {
         existing.kind.clone()
     };
-    let icon = if update_metadata || existing.icon.trim().is_empty() {
-        input.icon.clone()
-    } else {
-        existing.icon.clone()
-    };
+    let incoming_icon_is_placeholder = matches!(
+        input.icon.as_str(),
+        "AppWindow" | "ExternalLink" | "CircleDot"
+    );
+    let icon =
+        if (update_metadata && !incoming_icon_is_placeholder) || existing.icon.trim().is_empty() {
+            input.icon.clone()
+        } else {
+            existing.icon.clone()
+        };
     let accent = if update_metadata || existing.accent.trim().is_empty() {
         input.accent.clone()
     } else {
@@ -3050,21 +3097,46 @@ fn search_trips(query: String) -> Result<Vec<TripSearchResult>, String> {
     Ok(results)
 }
 
-#[tauri::command]
-fn trip_count_for_items(item_ids: Vec<String>) -> Result<HashMap<String, i64>, String> {
+fn trip_count_for_items_blocking(item_ids: Vec<String>) -> Result<HashMap<String, i64>, String> {
     let conn = open_db()?;
-    let mut counts = HashMap::new();
-    for id in item_ids {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM trips WHERE item_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        counts.insert(id, count);
+    let mut counts = item_ids
+        .iter()
+        .map(|id| (id.clone(), 0))
+        .collect::<HashMap<_, _>>();
+
+    for chunk in item_ids.chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT item_id, COUNT(*) FROM trips WHERE item_id IN ({placeholders}) GROUP BY item_id"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare trip count query: {error}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| format!("Failed to count trips: {error}"))?;
+        for row in rows {
+            let (item_id, count) =
+                row.map_err(|error| format!("Failed to read trip count: {error}"))?;
+            counts.insert(item_id, count);
+        }
     }
     Ok(counts)
+}
+
+#[tauri::command]
+async fn trip_count_for_items(item_ids: Vec<String>) -> Result<HashMap<String, i64>, String> {
+    tauri::async_runtime::spawn_blocking(move || trip_count_for_items_blocking(item_ids))
+        .await
+        .map_err(|error| format!("Trip count worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -4677,7 +4749,11 @@ extern "system" {
 #[cfg(target_os = "windows")]
 fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
     use lnk::ShellLink;
-    if let Ok(shortcut) = ShellLink::open(lnk_path) {
+    let parsed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ShellLink::open(lnk_path)))
+            .ok()
+            .and_then(Result::ok);
+    if let Some(shortcut) = parsed {
         if let Some(info) = shortcut.link_info() {
             if let Some(path) = info.local_base_path() {
                 if !path.trim().is_empty() {
@@ -4898,50 +4974,6 @@ fn reveal_target(target: String) -> Result<String, String> {
     Err(format!("Cannot reveal target: {target}"))
 }
 
-fn scan_dir_for_shortcuts(path: &Path, out: &mut Vec<OrbitItemInput>) {
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_dir_for_shortcuts(&path, out);
-            continue;
-        }
-
-        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-            continue;
-        };
-
-        if !extension.eq_ignore_ascii_case("lnk") {
-            continue;
-        }
-
-        let title = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("Shortcut")
-            .to_string();
-        let target = path.to_string_lossy().to_string();
-
-        out.push(OrbitItemInput {
-            title,
-            subtitle: target.clone(),
-            kind: "app".to_string(),
-            group: "apps".to_string(),
-            target,
-            arguments: String::new(),
-            aliases: vec![],
-            tags: vec!["shortcut".to_string(), "scan".to_string()],
-            sub_tag: String::new(),
-            icon: "AppWindow".to_string(),
-            accent: "#5cc8ff".to_string(),
-            favorite: false,
-        });
-    }
-}
-
 fn shortcut_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(profile) = std::env::var_os("USERPROFILE") {
@@ -4956,141 +4988,303 @@ fn shortcut_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn scan_shortcuts_with_powershell() -> Result<Vec<OrbitItemInput>, String> {
-    let script = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Drawing
-function Get-IconData([string]$path) {
-  try {
-    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return "" }
-    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
-    if (-not $icon) { return "" }
-    $bitmap = $icon.ToBitmap()
-    $stream = New-Object System.IO.MemoryStream
-    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
-    $bytes = $stream.ToArray()
-    $stream.Dispose()
-    $bitmap.Dispose()
-    $icon.Dispose()
-    return "data:image/png;base64," + [Convert]::ToBase64String($bytes)
-  } catch {
-    return ""
-  }
-}
-$roots = @()
-if ($env:USERPROFILE) { $roots += (Join-Path $env:USERPROFILE 'Desktop') }
-if ($env:APPDATA) { $roots += (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') }
-if ($env:PROGRAMDATA) { $roots += (Join-Path $env:PROGRAMDATA 'Microsoft\Windows\Start Menu\Programs') }
-$shell = New-Object -ComObject WScript.Shell
-$items = foreach ($root in $roots) {
-  if (Test-Path -LiteralPath $root) {
-    Get-ChildItem -LiteralPath $root -Filter *.lnk -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-      try {
-        $shortcut = $shell.CreateShortcut($_.FullName)
-        $iconSource = [string]$shortcut.TargetPath
-        if (-not $iconSource -or -not (Test-Path -LiteralPath $iconSource)) { $iconSource = $_.FullName }
-        [pscustomobject]@{
-          Title = $_.BaseName
-          Shortcut = $_.FullName
-          TargetPath = [string]$shortcut.TargetPath
-          Arguments = [string]$shortcut.Arguments
-          WorkingDirectory = [string]$shortcut.WorkingDirectory
-          IconLocation = [string]$shortcut.IconLocation
-          IconBase64 = (Get-IconData $iconSource)
+fn collect_shortcut_paths(path: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_shortcut_paths(&path, out);
+        } else if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false)
+        {
+            out.push(path);
         }
-      } catch {}
     }
-  }
 }
-@($items) | ConvertTo-Json -Depth 4
-"#;
 
-    let mut cmd = ProcessCommand::new("powershell.exe");
+fn shortcut_signature(path: &Path) -> (i64, i64) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return (0, 0);
+    };
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or_default();
+    (modified_at, metadata.len() as i64)
+}
+
+fn parse_shortcut_cache_entry(path: &Path, modified_at: i64, file_size: i64) -> ShortcutCacheEntry {
+    let shortcut_path = path.to_string_lossy().to_string();
+    let title = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Shortcut")
+        .to_string();
+    let mut target_path = String::new();
+    let mut arguments = String::new();
+    let mut working_directory = String::new();
+    let mut icon_location = String::new();
+
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000);
-
-    let output = cmd
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
-        .map_err(|error| format!("Failed to run shortcut resolver: {error}"))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() || stdout == "null" {
-        return Ok(Vec::new());
-    }
-
-    let shortcuts: Vec<ShortcutInfo> = serde_json::from_str(&stdout)
-        .map_err(|error| format!("Failed to parse shortcut resolver output: {error}"))?;
-
-    Ok(shortcuts
-        .into_iter()
-        .map(|shortcut| {
-            let resolved = if shortcut.target_path.trim().is_empty() {
-                shortcut.shortcut.clone()
-            } else if shortcut.arguments.trim().is_empty() {
-                shortcut.target_path.clone()
-            } else {
-                format!("{} {}", shortcut.target_path, shortcut.arguments)
-            };
-            OrbitItemInput {
-                title: shortcut.title,
-                subtitle: if resolved.trim().is_empty() {
-                    shortcut.shortcut.clone()
-                } else {
-                    resolved
-                },
-                kind: "app".to_string(),
-                group: "apps".to_string(),
-                target: shortcut.shortcut,
-                arguments: shortcut.arguments.clone(),
-                aliases: vec![shortcut.target_path, shortcut.working_directory]
-                    .into_iter()
-                    .filter(|value| !value.trim().is_empty())
-                    .collect(),
-                tags: vec!["shortcut".to_string(), "scan".to_string()],
-                sub_tag: String::new(),
-                icon: if shortcut.icon_base64.trim().starts_with("data:image/") {
-                    shortcut.icon_base64
-                } else if shortcut.icon_location.trim().is_empty() {
-                    "AppWindow".to_string()
-                } else {
-                    "ExternalLink".to_string()
-                },
-                accent: "#5cc8ff".to_string(),
-                favorite: false,
+    {
+        use lnk::ShellLink;
+        let parsed =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ShellLink::open(path)))
+                .ok()
+                .and_then(Result::ok);
+        if let Some(shortcut) = parsed {
+            if let Some(info) = shortcut.link_info() {
+                if let Some(value) = info.local_base_path() {
+                    target_path = value.clone();
+                }
             }
+            if target_path.trim().is_empty() {
+                target_path = shortcut.relative_path().clone().unwrap_or_default();
+            }
+            arguments = shortcut.arguments().clone().unwrap_or_default();
+            working_directory = shortcut.working_dir().clone().unwrap_or_default();
+            icon_location = shortcut.icon_location().clone().unwrap_or_default();
+        }
+    }
+
+    ShortcutCacheEntry {
+        shortcut_path,
+        modified_at,
+        file_size,
+        title,
+        target_path,
+        arguments,
+        working_directory,
+        icon_location,
+        icon_data: String::new(),
+    }
+}
+
+fn shortcut_cache_entry_to_input(entry: &ShortcutCacheEntry) -> OrbitItemInput {
+    let subtitle = if entry.target_path.trim().is_empty() {
+        entry.shortcut_path.clone()
+    } else if entry.arguments.trim().is_empty() {
+        entry.target_path.clone()
+    } else {
+        format!("{} {}", entry.target_path, entry.arguments)
+    };
+    OrbitItemInput {
+        title: entry.title.clone(),
+        subtitle,
+        kind: "app".to_string(),
+        group: "apps".to_string(),
+        target: entry.shortcut_path.clone(),
+        arguments: entry.arguments.clone(),
+        aliases: unique_strings(vec![
+            entry.target_path.clone(),
+            entry.working_directory.clone(),
+        ]),
+        tags: vec!["shortcut".to_string(), "scan".to_string()],
+        sub_tag: String::new(),
+        icon: "AppWindow".to_string(),
+        accent: "#5cc8ff".to_string(),
+        favorite: false,
+    }
+}
+
+fn load_shortcut_scan_cache(
+    conn: &Connection,
+) -> Result<HashMap<String, ShortcutCacheEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT shortcut_path, modified_at, file_size, title, target_path, arguments, working_directory, icon_location, icon_data FROM shortcut_scan_cache",
+        )
+        .map_err(|error| format!("Failed to prepare shortcut cache query: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ShortcutCacheEntry {
+                shortcut_path: row.get(0)?,
+                modified_at: row.get(1)?,
+                file_size: row.get(2)?,
+                title: row.get(3)?,
+                target_path: row.get(4)?,
+                arguments: row.get(5)?,
+                working_directory: row.get(6)?,
+                icon_location: row.get(7)?,
+                icon_data: row.get(8)?,
+            })
         })
-        .collect())
+        .map_err(|error| format!("Failed to read shortcut cache: {error}"))?;
+    let mut cache = HashMap::new();
+    for row in rows {
+        let entry = row.map_err(|error| format!("Failed to map shortcut cache: {error}"))?;
+        cache.insert(entry.shortcut_path.clone(), entry);
+    }
+    Ok(cache)
+}
+
+fn scan_shortcuts_native_cached_with_conn(
+    conn: &mut Connection,
+) -> Result<Vec<OrbitItemInput>, String> {
+    let mut paths = Vec::new();
+    for root in shortcut_roots() {
+        collect_shortcut_paths(&root, &mut paths);
+    }
+    paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+    let cache = load_shortcut_scan_cache(conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start shortcut cache update: {error}"))?;
+    let updated_at = now_string();
+    let mut found = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        let shortcut_path = path.to_string_lossy().to_string();
+        let (modified_at, file_size) = shortcut_signature(&path);
+        let entry = cache
+            .get(&shortcut_path)
+            .filter(|entry| entry.modified_at == modified_at && entry.file_size == file_size)
+            .cloned()
+            .unwrap_or_else(|| parse_shortcut_cache_entry(&path, modified_at, file_size));
+
+        if !cache
+            .get(&shortcut_path)
+            .map(|cached| cached.modified_at == modified_at && cached.file_size == file_size)
+            .unwrap_or(false)
+        {
+            tx.execute(
+                r#"
+                INSERT INTO shortcut_scan_cache (
+                    shortcut_path, modified_at, file_size, title, target_path, arguments,
+                    working_directory, icon_location, icon_data, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '', ?9)
+                ON CONFLICT(shortcut_path) DO UPDATE SET
+                    modified_at = excluded.modified_at,
+                    file_size = excluded.file_size,
+                    title = excluded.title,
+                    target_path = excluded.target_path,
+                    arguments = excluded.arguments,
+                    working_directory = excluded.working_directory,
+                    icon_location = excluded.icon_location,
+                    icon_data = '',
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    entry.shortcut_path,
+                    entry.modified_at,
+                    entry.file_size,
+                    entry.title,
+                    entry.target_path,
+                    entry.arguments,
+                    entry.working_directory,
+                    entry.icon_location,
+                    &updated_at,
+                ],
+            )
+            .map_err(|error| format!("Failed to update shortcut cache: {error}"))?;
+        }
+        found.push(shortcut_cache_entry_to_input(&entry));
+    }
+
+    tx.commit()
+        .map_err(|error| format!("Failed to commit shortcut cache update: {error}"))?;
+    found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    Ok(found)
+}
+
+fn scan_shortcuts_native_cached() -> Result<Vec<OrbitItemInput>, String> {
+    let mut conn = open_db()?;
+    scan_shortcuts_native_cached_with_conn(&mut conn)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod shortcut_scan_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn native_shortcut_scan_uses_cache_and_defers_icons() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+
+        let first_started = Instant::now();
+        let first = scan_shortcuts_native_cached_with_conn(&mut conn)
+            .expect("first native shortcut scan should succeed");
+        let first_elapsed = first_started.elapsed();
+        assert!(
+            !first.is_empty(),
+            "Windows shortcut roots should contain entries"
+        );
+        assert!(
+            first
+                .iter()
+                .all(|item| !item.icon.starts_with("data:image/")),
+            "preview scan must not eagerly embed image data"
+        );
+
+        let cached_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM shortcut_scan_cache", [], |row| {
+                row.get(0)
+            })
+            .expect("shortcut cache should be queryable");
+        assert_eq!(cached_rows as usize, first.len());
+
+        let second_started = Instant::now();
+        let second = scan_shortcuts_native_cached_with_conn(&mut conn)
+            .expect("cached native shortcut scan should succeed");
+        let second_elapsed = second_started.elapsed();
+        assert_eq!(first.len(), second.len());
+
+        let cache = load_shortcut_scan_cache(&conn).expect("shortcut cache should load");
+        let icon_requests = cache
+            .values()
+            .filter(|entry| {
+                !entry.target_path.trim().is_empty() && Path::new(&entry.target_path).is_file()
+            })
+            .take(12)
+            .enumerate()
+            .map(|(index, entry)| IconHydrationInput {
+                key: format!("icon-test-{index}"),
+                shortcut: entry.shortcut_path.clone(),
+                source: entry.target_path.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !icon_requests.is_empty(),
+            "icon test requires a resolvable shortcut"
+        );
+        let icons = extract_shortcut_icons_batch(&icon_requests)
+            .expect("background icon extraction should succeed");
+        assert!(
+            !icons.is_empty(),
+            "at least one associated icon should be extracted"
+        );
+        println!(
+            "native shortcut scan: entries={}, first_ms={}, cached_ms={}, sampled_icons={}",
+            first.len(),
+            first_elapsed.as_millis(),
+            second_elapsed.as_millis(),
+            icons.len()
+        );
+    }
+}
+
+fn scan_shortcuts_blocking() -> Result<Vec<OrbitItem>, String> {
+    let found = scan_shortcuts_native_cached()?;
+    import_scanned_items_blocking(found)?;
+    let conn = open_db()?;
+    log_plugin_event(&conn, "core-shortcuts", "info", "Shortcut scan completed")?;
+    all_items(&conn)
 }
 
 #[tauri::command]
-fn scan_shortcuts() -> Result<Vec<OrbitItem>, String> {
-    let mut found = scan_shortcuts_with_powershell().unwrap_or_else(|_| {
-        let mut fallback = Vec::new();
-        for root in shortcut_roots() {
-            scan_dir_for_shortcuts(&root, &mut fallback);
-        }
-        fallback
-    });
-    found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-
-    let conn = open_db()?;
-    for input in found {
-        let _ = upsert_scanned_item(&conn, &input);
-    }
-    log_plugin_event(&conn, "core-shortcuts", "info", "Shortcut scan completed")?;
-    all_items(&conn)
+async fn scan_shortcuts() -> Result<Vec<OrbitItem>, String> {
+    tauri::async_runtime::spawn_blocking(scan_shortcuts_blocking)
+        .await
+        .map_err(|error| format!("Shortcut scan worker failed: {error}"))?
 }
 
 fn bookmark_files() -> Vec<PathBuf> {
@@ -5133,8 +5327,7 @@ fn collect_bookmarks(node: &serde_json::Value, out: &mut Vec<OrbitItemInput>) {
     }
 }
 
-#[tauri::command]
-fn scan_browser_bookmarks() -> Result<Vec<OrbitItem>, String> {
+fn scan_browser_bookmarks_blocking() -> Result<Vec<OrbitItem>, String> {
     let conn = open_db()?;
     let mut found = Vec::new();
     for path in bookmark_files() {
@@ -5161,6 +5354,13 @@ fn scan_browser_bookmarks() -> Result<Vec<OrbitItem>, String> {
         "Browser bookmark import completed",
     )?;
     all_items(&conn)
+}
+
+#[tauri::command]
+async fn scan_browser_bookmarks() -> Result<Vec<OrbitItem>, String> {
+    tauri::async_runtime::spawn_blocking(scan_browser_bookmarks_blocking)
+        .await
+        .map_err(|error| format!("Bookmark scan worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -5205,20 +5405,13 @@ fn update_global_hotkey(app: tauri::AppHandle, new_hotkey: String) -> Result<(),
 }
 
 #[tauri::command]
-fn preview_scan_shortcuts() -> Result<Vec<OrbitItemInput>, String> {
-    let mut found = scan_shortcuts_with_powershell().unwrap_or_else(|_| {
-        let mut fallback = Vec::new();
-        for root in shortcut_roots() {
-            scan_dir_for_shortcuts(&root, &mut fallback);
-        }
-        fallback
-    });
-    found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-    Ok(found)
+async fn preview_scan_shortcuts() -> Result<Vec<OrbitItemInput>, String> {
+    tauri::async_runtime::spawn_blocking(scan_shortcuts_native_cached)
+        .await
+        .map_err(|error| format!("Shortcut preview worker failed: {error}"))?
 }
 
-#[tauri::command]
-fn preview_scan_browser_bookmarks() -> Result<Vec<OrbitItemInput>, String> {
+fn preview_scan_browser_bookmarks_blocking() -> Result<Vec<OrbitItemInput>, String> {
     let mut found = Vec::new();
     for path in bookmark_files() {
         if !path.is_file() {
@@ -5238,16 +5431,289 @@ fn preview_scan_browser_bookmarks() -> Result<Vec<OrbitItemInput>, String> {
 }
 
 #[tauri::command]
-fn import_scanned_items(
-    app: tauri::AppHandle,
-    items: Vec<OrbitItemInput>,
-) -> Result<Vec<OrbitItem>, String> {
-    let conn = open_db()?;
-    for input in items {
-        let _ = upsert_scanned_item(&conn, &input);
+async fn preview_scan_browser_bookmarks() -> Result<Vec<OrbitItemInput>, String> {
+    tauri::async_runtime::spawn_blocking(preview_scan_browser_bookmarks_blocking)
+        .await
+        .map_err(|error| format!("Bookmark preview worker failed: {error}"))?
+}
+
+fn extract_shortcut_icons_batch(
+    requests: &[IconHydrationInput],
+) -> Result<HashMap<String, String>, String> {
+    if requests.is_empty() {
+        return Ok(HashMap::new());
     }
-    let _ = app.emit("orbit://refresh-resources", ());
-    all_items(&conn)
+    let json = serde_json::to_vec(requests)
+        .map_err(|error| format!("Failed to serialize icon requests: {error}"))?;
+    let encoded = general_purpose::STANDARD.encode(json);
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Drawing
+$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:ORBIT_ICON_INPUT))
+$requests = ConvertFrom-Json -InputObject $json
+$output = foreach ($request in $requests) {
+  try {
+    $source = [string]$request.Source
+    $shortcut = [string]$request.Shortcut
+    if (-not $source -or -not (Test-Path -LiteralPath $source)) {
+      $source = $shortcut
+      if ($shortcut.EndsWith('.lnk', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($shortcut)
+        if ($link -and $link.TargetPath -and (Test-Path -LiteralPath $link.TargetPath)) {
+          $source = [string]$link.TargetPath
+        }
+      }
+    }
+    if (-not $source -or -not (Test-Path -LiteralPath $source)) { continue }
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($source)
+    if (-not $icon) { continue }
+    $bitmap = $icon.ToBitmap()
+    $stream = New-Object System.IO.MemoryStream
+    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bytes = $stream.ToArray()
+    $stream.Dispose()
+    $bitmap.Dispose()
+    $icon.Dispose()
+    [pscustomobject]@{
+      Key = [string]$request.Key
+      Icon = 'data:image/png;base64,' + [Convert]::ToBase64String($bytes)
+    }
+  } catch {}
+}
+[Console]::Out.Write((ConvertTo-Json -InputObject @($output) -Compress -Depth 3))
+"#;
+    let mut cmd = ProcessCommand::new("powershell.exe");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    let output = cmd
+        .env("ORBIT_ICON_INPUT", encoded)
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|error| format!("Failed to run icon worker: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let stdout_text = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout_text.trim_start_matches('\u{feff}').trim();
+    if stdout.is_empty() || stdout == "null" {
+        return Ok(HashMap::new());
+    }
+    let value: serde_json::Value = serde_json::from_str(stdout)
+        .map_err(|error| format!("Failed to parse icon worker output: {error}"))?;
+    let values = match value {
+        serde_json::Value::Array(values) => values,
+        value => vec![value],
+    };
+    let mut icons = HashMap::new();
+    for value in values {
+        let item: IconHydrationOutput = serde_json::from_value(value)
+            .map_err(|error| format!("Failed to map icon worker output: {error}"))?;
+        if item.icon.starts_with("data:image/") {
+            icons.insert(item.key, item.icon);
+        }
+    }
+    Ok(icons)
+}
+
+fn hydrate_shortcut_icons_blocking(item_ids: Vec<String>) -> Result<usize, String> {
+    if item_ids.is_empty() {
+        return Ok(0);
+    }
+    let wanted = item_ids.into_iter().collect::<HashSet<_>>();
+    let mut conn = open_db()?;
+    let cache = load_shortcut_scan_cache(&conn)?;
+    let items = all_items(&conn)?;
+    let mut ready = Vec::<(String, String, String)>::new();
+    let mut requests = Vec::<IconHydrationInput>::new();
+
+    for item in items {
+        if !wanted.contains(&item.id)
+            || !item.target.to_lowercase().ends_with(".lnk")
+            || item.icon.starts_with("data:image/")
+        {
+            continue;
+        }
+        if let Some(cached) = cache.get(&item.target) {
+            if cached.icon_data.starts_with("data:image/") {
+                ready.push((item.id, item.target, cached.icon_data.clone()));
+                continue;
+            }
+            requests.push(IconHydrationInput {
+                key: item.id,
+                shortcut: item.target,
+                source: cached.target_path.clone(),
+            });
+        } else {
+            let source = resolve_lnk_target(&item.target).unwrap_or_default();
+            requests.push(IconHydrationInput {
+                key: item.id,
+                shortcut: item.target,
+                source,
+            });
+        }
+    }
+
+    let request_targets = requests
+        .iter()
+        .map(|request| (request.key.clone(), request.shortcut.clone()))
+        .collect::<HashMap<_, _>>();
+    for chunk in requests.chunks(64) {
+        for (item_id, icon) in extract_shortcut_icons_batch(chunk)? {
+            if let Some(shortcut_path) = request_targets.get(&item_id) {
+                ready.push((item_id, shortcut_path.clone(), icon));
+            }
+        }
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start icon cache update: {error}"))?;
+    let updated_at = now_string();
+    let mut updated = 0;
+    for (item_id, shortcut_path, icon) in ready {
+        tx.execute(
+            "UPDATE items SET icon = ?2, updated_at = ?3 WHERE id = ?1",
+            params![item_id, icon, &updated_at],
+        )
+        .map_err(|error| format!("Failed to update resource icon: {error}"))?;
+        tx.execute(
+            "UPDATE shortcut_scan_cache SET icon_data = ?2, updated_at = ?3 WHERE shortcut_path = ?1",
+            params![shortcut_path, icon, &updated_at],
+        )
+        .map_err(|error| format!("Failed to update shortcut icon cache: {error}"))?;
+        updated += 1;
+    }
+    tx.commit()
+        .map_err(|error| format!("Failed to commit icon cache update: {error}"))?;
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn hydrate_shortcut_icons(item_ids: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || hydrate_shortcut_icons_blocking(item_ids))
+        .await
+        .map_err(|error| format!("Icon hydration worker failed: {error}"))?
+}
+
+fn import_scanned_items_with_conn(
+    conn: &mut Connection,
+    items: Vec<OrbitItemInput>,
+) -> Result<ImportResult, String> {
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start scanned item import: {error}"))?;
+    let mut inserted = 0;
+    let mut updated = 0;
+    let mut skipped = 0;
+    let mut item_ids = Vec::new();
+    let mut seen_targets = HashSet::new();
+
+    for input in items {
+        if !seen_targets.insert(input.target.clone()) {
+            skipped += 1;
+            continue;
+        }
+        let existed = get_item_by_target(&tx, &input.target)?.is_some();
+        let item = upsert_scanned_item(&tx, &input)?;
+        if existed {
+            updated += 1;
+        } else {
+            inserted += 1;
+        }
+        item_ids.push(item.id);
+    }
+
+    tx.commit()
+        .map_err(|error| format!("Failed to commit scanned item import: {error}"))?;
+    Ok(ImportResult {
+        imported: inserted + updated,
+        inserted,
+        updated,
+        skipped,
+        trips_imported: 0,
+        item_ids,
+    })
+}
+
+fn import_scanned_items_blocking(items: Vec<OrbitItemInput>) -> Result<ImportResult, String> {
+    let mut conn = open_db()?;
+    import_scanned_items_with_conn(&mut conn, items)
+}
+
+#[cfg(test)]
+mod import_batch_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn scanned_input(index: usize) -> OrbitItemInput {
+        OrbitItemInput {
+            title: format!("Performance item {index}"),
+            subtitle: format!(r#"C:\Performance\item-{index}.lnk"#),
+            kind: "app".to_string(),
+            group: "apps".to_string(),
+            target: format!(r#"C:\Performance\item-{index}.lnk"#),
+            arguments: String::new(),
+            aliases: vec![format!("item-{index}")],
+            tags: vec!["shortcut".to_string(), "scan".to_string()],
+            sub_tag: String::new(),
+            icon: "AppWindow".to_string(),
+            accent: "#5cc8ff".to_string(),
+            favorite: false,
+        }
+    }
+
+    #[test]
+    fn imports_five_hundred_items_in_one_transaction() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        let inputs = (0..500).map(scanned_input).collect::<Vec<_>>();
+        let started = Instant::now();
+        let first = import_scanned_items_with_conn(&mut conn, inputs.clone())
+            .expect("bulk insert should succeed");
+        let insert_elapsed = started.elapsed();
+        assert_eq!(first.inserted, 500);
+        assert_eq!(first.updated, 0);
+        assert_eq!(first.skipped, 0);
+
+        let duplicate_started = Instant::now();
+        let second =
+            import_scanned_items_with_conn(&mut conn, inputs).expect("bulk update should succeed");
+        let update_elapsed = duplicate_started.elapsed();
+        assert_eq!(second.inserted, 0);
+        assert_eq!(second.updated, 500);
+        println!(
+            "bulk import: items=500, insert_ms={}, update_ms={}",
+            insert_elapsed.as_millis(),
+            update_elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn skips_duplicate_targets_inside_a_batch() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        let item = scanned_input(1);
+        let result = import_scanned_items_with_conn(&mut conn, vec![item.clone(), item])
+            .expect("duplicate batch import should succeed");
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 1);
+    }
+}
+
+#[tauri::command]
+async fn import_scanned_items(items: Vec<OrbitItemInput>) -> Result<ImportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || import_scanned_items_blocking(items))
+        .await
+        .map_err(|error| format!("Scanned item import worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -5366,9 +5832,10 @@ fn set_hotkey_behavior(app: tauri::AppHandle, behavior: String) -> Result<Catalo
 fn export_catalog_json() -> Result<ExportResult, String> {
     let conn = open_db()?;
     let export = CatalogExport {
-        version: 2,
+        version: 3,
         exported_at: now_string(),
         items: all_items(&conn)?,
+        groups: all_groups(&conn)?,
         trips: all_trips(&conn)?,
         plugins: all_plugins(&conn)?,
         active_theme_id: Some(setting(&conn, "active_theme_id", "local-galaxy")?),
@@ -5386,40 +5853,269 @@ fn export_catalog_json() -> Result<ExportResult, String> {
     })
 }
 
-#[tauri::command]
-fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<Vec<OrbitItem>, String> {
-    let export: CatalogExport =
-        serde_json::from_str(&json).map_err(|error| format!("Invalid import JSON: {error}"))?;
-    let conn = open_db()?;
-    for item in export.items {
-        let input = OrbitItemInput {
-            title: item.title,
-            subtitle: item.subtitle,
-            kind: item.kind,
-            group: item.group,
-            target: item.target,
-            arguments: item.arguments,
-            aliases: item.aliases,
-            tags: item.tags,
-            sub_tag: item.sub_tag,
-            icon: item.icon,
-            accent: item.accent,
-            favorite: item.favorite,
-        };
-        let _ = insert_item(&conn, &input);
+fn available_catalog_item_id(conn: &Connection, item: &OrbitItem) -> Result<String, String> {
+    let preferred = if item.id.trim().is_empty() {
+        make_id(&item.kind, &item.target)
+    } else {
+        item.id.trim().to_string()
+    };
+    if get_item(conn, &preferred)?.is_none() {
+        return Ok(preferred);
     }
-    for trip in export.trips {
+
+    let base = make_id(&item.kind, &item.target);
+    if get_item(conn, &base)?.is_none() {
+        return Ok(base);
+    }
+    for suffix in 1..=10_000 {
+        let candidate = format!("{base}-import-{suffix}");
+        if get_item(conn, &candidate)?.is_none() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "Failed to allocate an ID for imported resource: {}",
+        item.target
+    ))
+}
+
+fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, bool), String> {
+    if item.target.trim().is_empty() {
+        return Err(format!(
+            "Imported resource '{}' has an empty target",
+            item.title
+        ));
+    }
+
+    let group = normalize_group_value(&item.group, &item.kind);
+    let aliases = serde_json::to_string(&item.aliases).unwrap_or_else(|_| "[]".to_string());
+    let tags = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+    let now = now_string();
+
+    if let Some(existing) = get_item_by_target(conn, &item.target)? {
+        conn.execute(
+            r#"
+            UPDATE items
+            SET title = ?2,
+                subtitle = ?3,
+                kind = ?4,
+                group_id = ?5,
+                aliases_json = ?6,
+                tags_json = ?7,
+                icon = ?8,
+                accent = ?9,
+                favorite = ?10,
+                launch_count = ?11,
+                last_launched_at = ?12,
+                updated_at = ?13,
+                sort_order = ?14,
+                arguments = ?15,
+                sub_tag = ?16
+            WHERE id = ?1
+            "#,
+            params![
+                &existing.id,
+                &item.title,
+                &item.subtitle,
+                &item.kind,
+                group,
+                aliases,
+                tags,
+                &item.icon,
+                &item.accent,
+                if item.favorite { 1 } else { 0 },
+                item.launch_count,
+                &item.last_launched_at,
+                now,
+                item.sort_order,
+                &item.arguments,
+                item.sub_tag.trim(),
+            ],
+        )
+        .map_err(|error| format!("Failed to restore imported resource: {error}"))?;
+        return Ok((existing.id, true));
+    }
+
+    let id = available_catalog_item_id(conn, item)?;
+    conn.execute(
+        r#"
+        INSERT INTO items (
+            id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
+            icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
+            sort_order, sub_tag
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)
+        "#,
+        params![
+            &id,
+            &item.title,
+            &item.subtitle,
+            &item.kind,
+            group,
+            &item.target,
+            &item.arguments,
+            aliases,
+            tags,
+            &item.icon,
+            &item.accent,
+            if item.favorite { 1 } else { 0 },
+            item.launch_count,
+            &item.last_launched_at,
+            now,
+            item.sort_order,
+            item.sub_tag.trim(),
+        ],
+    )
+    .map_err(|error| format!("Failed to insert imported resource: {error}"))?;
+    Ok((id, false))
+}
+
+fn parse_catalog_export(json: &str) -> Result<CatalogExport, String> {
+    let normalized = json.trim_start_matches('\u{feff}').trim();
+    serde_json::from_str(normalized).map_err(|error| format!("Invalid import JSON: {error}"))
+}
+
+fn import_catalog_export_with_conn(
+    conn: &mut Connection,
+    export: CatalogExport,
+) -> Result<ImportResult, String> {
+    let CatalogExport {
+        items,
+        groups,
+        trips,
+        plugins,
+        active_theme_id,
+        ..
+    } = export;
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("Failed to start catalog import: {error}"))?;
+
+    for (index, group) in groups.into_iter().enumerate() {
+        if !group.custom || group.id.trim().is_empty() {
+            continue;
+        }
+        let existing_custom = tx
+            .query_row(
+                "SELECT custom FROM groups WHERE id = ?1",
+                params![&group.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to inspect imported group: {error}"))?;
+        if existing_custom == Some(0) {
+            continue;
+        }
+        tx.execute(
+            r#"
+            INSERT INTO groups (id, title, icon, description, custom, sort_order, created_at)
+            VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                icon = excluded.icon,
+                description = excluded.description,
+                sort_order = excluded.sort_order
+            "#,
+            params![
+                group.id,
+                group.title,
+                group.icon,
+                group.description,
+                index as i64,
+                now_string(),
+            ],
+        )
+        .map_err(|error| format!("Failed to restore imported group: {error}"))?;
+    }
+
+    let mut referenced_group_ids = HashSet::new();
+    let mut next_group_sort: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM groups",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Failed to read imported group order: {error}"))?;
+    for item in &items {
+        for group_id in split_group_ids(&item.group) {
+            if !referenced_group_ids.insert(group_id.clone()) {
+                continue;
+            }
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM groups WHERE id = ?1",
+                    params![&group_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| format!("Failed to inspect imported resource group: {error}"))?
+                .is_some();
+            if exists {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO groups (id, title, icon, description, custom, sort_order, created_at) VALUES (?1, ?1, 'Bookmark', ?2, 1, ?3, ?4)",
+                params![
+                    &group_id,
+                    "Recovered from an older JSON backup",
+                    next_group_sort,
+                    now_string(),
+                ],
+            )
+            .map_err(|error| format!("Failed to recover imported resource group: {error}"))?;
+            next_group_sort += 1;
+        }
+    }
+
+    let mut inserted = 0;
+    let mut updated = 0;
+    let mut skipped = 0;
+    let mut item_ids = Vec::new();
+    let mut imported_id_map: HashMap<String, String> = HashMap::new();
+    let mut imported_target_map: HashMap<String, String> = HashMap::new();
+    for item in items {
+        if let Some(actual_id) = imported_target_map.get(&item.target) {
+            imported_id_map.insert(item.id.clone(), actual_id.clone());
+            skipped += 1;
+            continue;
+        }
+
+        let exported_id = item.id.clone();
+        let target = item.target.clone();
+        let (actual_id, existed) = restore_catalog_item(&tx, &item)?;
+        if existed {
+            updated += 1;
+        } else {
+            inserted += 1;
+        }
+        imported_id_map.insert(exported_id, actual_id.clone());
+        imported_target_map.insert(target, actual_id.clone());
+        item_ids.push(actual_id);
+    }
+
+    let mut trips_imported = 0;
+    for trip in trips {
+        let actual_item_id = if let Some(actual_id) = imported_id_map.get(&trip.item_id) {
+            actual_id.clone()
+        } else if get_item(&tx, &trip.item_id)?.is_some() {
+            trip.item_id.clone()
+        } else {
+            return Err(format!(
+                "Imported record '{}' references a missing resource: {}",
+                trip.title, trip.item_id
+            ));
+        };
         let category = normalize_trip_category(&trip.category);
         let status = normalize_trip_status(&category, trip.status);
         let tags = normalize_trip_tags(trip.tags);
-        let _ = conn.execute(
+        tx.execute(
             r#"
             INSERT OR REPLACE INTO trips (id, item_id, title, content, category, status, tags, pinned, created_at, updated_at, last_viewed_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             params![
                 trip.id,
-                trip.item_id,
+                actual_item_id,
                 trip.title,
                 trip.content,
                 category,
@@ -5430,14 +6126,236 @@ fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<Vec<OrbitI
                 trip.updated_at,
                 trip.last_viewed_at,
             ],
-        );
+        )
+        .map_err(|error| format!("Failed to import trip: {error}"))?;
+        trips_imported += 1;
     }
-    if let Some(theme_id) = export.active_theme_id {
-        let _ = set_setting_value(&conn, "active_theme_id", &theme_id);
+
+    for plugin in plugins {
+        tx.execute(
+            "UPDATE plugin_states SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
+            params![plugin.id, if plugin.enabled { 1 } else { 0 }, now_string(),],
+        )
+        .map_err(|error| format!("Failed to restore plugin state: {error}"))?;
     }
-    log_plugin_event(&conn, "core-backup", "info", "Catalog import completed")?;
+
+    if let Some(theme_id) = active_theme_id {
+        set_setting_value(&tx, "active_theme_id", &theme_id)?;
+    }
+    log_plugin_event(&tx, "core-backup", "info", "Catalog import completed")?;
+    tx.commit()
+        .map_err(|error| format!("Failed to commit catalog import: {error}"))?;
+    Ok(ImportResult {
+        imported: inserted + updated,
+        inserted,
+        updated,
+        skipped,
+        trips_imported,
+        item_ids,
+    })
+}
+
+fn import_catalog_json_blocking(json: String) -> Result<ImportResult, String> {
+    let export = parse_catalog_export(&json)?;
+    let mut conn = open_db()?;
+    import_catalog_export_with_conn(&mut conn, export)
+}
+
+#[tauri::command]
+async fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<ImportResult, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || import_catalog_json_blocking(json))
+        .await
+        .map_err(|error| format!("Catalog import worker failed: {error}"))??;
     let _ = app.emit("orbit://refresh-resources", ());
-    all_items(&conn)
+    let _ = app.emit("orbit://trips-changed", ());
+    Ok(result)
+}
+
+#[cfg(test)]
+mod catalog_import_tests {
+    use super::*;
+
+    fn imported_item(id: &str, target: &str) -> OrbitItem {
+        OrbitItem {
+            id: id.to_string(),
+            title: "Restored title".to_string(),
+            subtitle: "Restored subtitle".to_string(),
+            kind: "app".to_string(),
+            group: "imported-group".to_string(),
+            target: target.to_string(),
+            arguments: "--restored".to_string(),
+            aliases: vec!["restored-alias".to_string()],
+            tags: vec!["restored-tag".to_string()],
+            icon: "Rocket".to_string(),
+            accent: "#123456".to_string(),
+            favorite: true,
+            launch_count: 17,
+            last_launched_at: Some("123456789".to_string()),
+            sort_order: -42,
+            sub_tag: "Imported/Subtag".to_string(),
+        }
+    }
+
+    fn empty_catalog(items: Vec<OrbitItem>) -> CatalogExport {
+        CatalogExport {
+            version: 3,
+            exported_at: "test".to_string(),
+            items,
+            groups: Vec::new(),
+            trips: Vec::new(),
+            plugins: Vec::new(),
+            active_theme_id: None,
+        }
+    }
+
+    #[test]
+    fn restores_existing_resource_fields_groups_plugins_theme_and_trip_links() {
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        let target = r#"C:\CatalogImport\tool.exe"#;
+        let existing = insert_item(
+            &conn,
+            &OrbitItemInput {
+                title: "Current title".to_string(),
+                subtitle: "Current subtitle".to_string(),
+                kind: "app".to_string(),
+                group: "apps".to_string(),
+                target: target.to_string(),
+                arguments: String::new(),
+                aliases: vec!["current-alias".to_string()],
+                tags: vec!["current-tag".to_string()],
+                sub_tag: String::new(),
+                icon: "AppWindow".to_string(),
+                accent: "#ffffff".to_string(),
+                favorite: false,
+            },
+        )
+        .expect("existing item should be inserted");
+
+        let mut website_plugin = all_plugins(&conn)
+            .expect("plugins should load")
+            .into_iter()
+            .find(|plugin| plugin.id == "core-websites")
+            .expect("website plugin should exist");
+        website_plugin.enabled = false;
+
+        let imported_id = "foreign-resource-id";
+        let trip_id = "imported-trip";
+        let export = CatalogExport {
+            version: 3,
+            exported_at: "test".to_string(),
+            items: vec![imported_item(imported_id, target)],
+            groups: vec![OrbitGroup {
+                id: "imported-group".to_string(),
+                title: "Imported group".to_string(),
+                icon: "Folder".to_string(),
+                description: "Imported description".to_string(),
+                custom: true,
+            }],
+            trips: vec![Trip {
+                id: trip_id.to_string(),
+                item_id: imported_id.to_string(),
+                title: "Imported trip".to_string(),
+                content: "Imported content".to_string(),
+                category: "note".to_string(),
+                status: None,
+                tags: vec!["backup".to_string()],
+                pinned: true,
+                created_at: 1,
+                updated_at: 2,
+                last_viewed_at: Some(3),
+            }],
+            plugins: vec![website_plugin],
+            active_theme_id: Some("paper".to_string()),
+        };
+
+        let result = import_catalog_export_with_conn(&mut conn, export)
+            .expect("catalog restore should succeed");
+        assert_eq!(result.inserted, 0);
+        assert_eq!(result.updated, 1);
+        assert_eq!(result.trips_imported, 1);
+
+        let restored = get_item_by_target(&conn, target)
+            .expect("restored item query should succeed")
+            .expect("restored item should exist");
+        assert_eq!(restored.id, existing.id);
+        assert_eq!(restored.title, "Restored title");
+        assert_eq!(restored.subtitle, "Restored subtitle");
+        assert_eq!(restored.group, "imported-group");
+        assert_eq!(restored.arguments, "--restored");
+        assert_eq!(restored.aliases, vec!["restored-alias"]);
+        assert_eq!(restored.tags, vec!["restored-tag"]);
+        assert_eq!(restored.icon, "Rocket");
+        assert_eq!(restored.accent, "#123456");
+        assert!(restored.favorite);
+        assert_eq!(restored.launch_count, 17);
+        assert_eq!(restored.last_launched_at.as_deref(), Some("123456789"));
+        assert_eq!(restored.sort_order, -42);
+        assert_eq!(restored.sub_tag, "Imported/Subtag");
+
+        let custom_group: i64 = conn
+            .query_row(
+                "SELECT custom FROM groups WHERE id = 'imported-group'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("custom group should be restored");
+        assert_eq!(custom_group, 1);
+        let plugin_enabled: i64 = conn
+            .query_row(
+                "SELECT enabled FROM plugin_states WHERE id = 'core-websites'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("plugin state should be restored");
+        assert_eq!(plugin_enabled, 0);
+        assert_eq!(
+            setting(&conn, "active_theme_id", "missing").expect("theme should load"),
+            "paper"
+        );
+        let trip_item_id: String = conn
+            .query_row(
+                "SELECT item_id FROM trips WHERE id = ?1",
+                params![trip_id],
+                |row| row.get(0),
+            )
+            .expect("trip should be restored");
+        assert_eq!(trip_item_id, existing.id);
+    }
+
+    #[test]
+    fn accepts_bom_prefixed_version_two_exports_without_groups() {
+        let export = empty_catalog(vec![imported_item(
+            "legacy-id",
+            r#"C:\CatalogImport\legacy.exe"#,
+        )]);
+        let mut value = serde_json::to_value(export).expect("catalog should serialize");
+        value["version"] = serde_json::json!(2);
+        value
+            .as_object_mut()
+            .expect("catalog should be an object")
+            .remove("groups");
+        let json = format!(
+            "\u{feff}{}",
+            serde_json::to_string(&value).expect("legacy catalog should serialize")
+        );
+        let parsed = parse_catalog_export(&json).expect("legacy catalog should parse");
+        assert_eq!(parsed.version, 2);
+        assert!(parsed.groups.is_empty());
+        assert_eq!(parsed.items.len(), 1);
+
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        import_catalog_export_with_conn(&mut conn, parsed).expect("legacy catalog should import");
+        let recovered_group: i64 = conn
+            .query_row(
+                "SELECT custom FROM groups WHERE id = 'imported-group'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy group reference should be recovered");
+        assert_eq!(recovered_group, 1);
+    }
 }
 
 fn ensure_local_templates() -> Result<(), String> {
@@ -7651,6 +8569,7 @@ pub fn run() {
             preview_scan_shortcuts,
             preview_scan_browser_bookmarks,
             import_scanned_items,
+            hydrate_shortcut_icons,
             set_plugin_enabled,
             set_active_theme,
             set_density,
