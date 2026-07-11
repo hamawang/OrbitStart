@@ -64,6 +64,7 @@ async function logBubbleError(message: string) {
 }
 
 type BubbleAlign = "left" | "right";
+const BUBBLE_EDGE_MARGIN_LOGICAL = 4;
 
 function hasTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -87,6 +88,36 @@ function monitorPhysicalBounds(monitor: {
   };
 }
 
+function bubbleEdgeMargin(monitor: { scaleFactor: number }) {
+  return Math.round(BUBBLE_EDGE_MARGIN_LOGICAL * (monitor.scaleFactor || 1));
+}
+
+function bubbleVisualDiameter(sizeValue: number, monitor: { scaleFactor: number }) {
+  return Math.round(sizeValue * (monitor.scaleFactor || 1));
+}
+
+function bubbleHorizontalInset(windowWidth: number, visualDiameter: number) {
+  return Math.max(0, (windowWidth - visualDiameter) / 2);
+}
+
+function bubbleEdgeX(
+  align: BubbleAlign,
+  windowWidth: number,
+  visualDiameter: number,
+  monitor: {
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+    scaleFactor: number;
+  }
+) {
+  const bounds = monitorPhysicalBounds(monitor);
+  const margin = bubbleEdgeMargin(monitor);
+  const horizontalInset = bubbleHorizontalInset(windowWidth, visualDiameter);
+  return align === "left"
+    ? bounds.x + margin - horizontalInset
+    : bounds.x + bounds.width - visualDiameter - margin - horizontalInset;
+}
+
 function clampBubbleToMonitor(
   x: number,
   y: number,
@@ -96,12 +127,14 @@ function clampBubbleToMonitor(
     position: { x: number; y: number };
     size: { width: number; height: number };
     scaleFactor: number;
-  }
+  },
+  visualWidth = windowWidth
 ): { x: number; y: number; align: BubbleAlign } {
   const bounds = monitorPhysicalBounds(monitor);
-  const margin = Math.round(8 * (monitor.scaleFactor || 1));
-  const minX = bounds.x + margin;
-  const maxX = bounds.x + bounds.width - windowWidth - margin;
+  const margin = bubbleEdgeMargin(monitor);
+  const horizontalInset = bubbleHorizontalInset(windowWidth, visualWidth);
+  const minX = bounds.x + margin - horizontalInset;
+  const maxX = bounds.x + bounds.width - visualWidth - margin - horizontalInset;
   const minY = bounds.y + margin;
   const maxY = bounds.y + bounds.height - windowHeight - margin;
   const fallbackX = bounds.x + Math.max(0, (bounds.width - windowWidth) / 2);
@@ -263,7 +296,13 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
           const outerSize = await getBubbleOuterSize(appWin, sizeValue, probeMonitor);
           const monitor = await pickMonitorForBubblePosition(savedPosition.x, savedPosition.y, outerSize.width, outerSize.height);
           if (monitor) {
-            const next = clampBubbleToMonitor(savedPosition.x, savedPosition.y, outerSize.width, outerSize.height, monitor);
+            const visualDiameter = bubbleVisualDiameter(sizeValue, monitor);
+            let next = clampBubbleToMonitor(savedPosition.x, savedPosition.y, outerSize.width, outerSize.height, monitor, visualDiameter);
+            if (snapToEdge) {
+              const preferredAlign = savedAlign === "left" || savedAlign === "right" ? savedAlign : next.align;
+              const edgeX = bubbleEdgeX(preferredAlign, outerSize.width, visualDiameter, monitor);
+              next = clampBubbleToMonitor(edgeX, next.y, outerSize.width, outerSize.height, monitor, visualDiameter);
+            }
             await appWin.setPosition(new PhysicalPosition(Math.round(next.x), Math.round(next.y)));
             setAlign(next.align);
             localStorage.setItem("orbitstart_bubble_align", next.align);
@@ -278,9 +317,10 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
         if (monitor) {
           const bounds = monitorPhysicalBounds(monitor);
           const outerSize = await getBubbleOuterSize(appWin, sizeValue, monitor);
-          const defaultX = bounds.x + bounds.width - outerSize.width - Math.round(18 * (monitor.scaleFactor || 1));
+          const visualDiameter = bubbleVisualDiameter(sizeValue, monitor);
+          const defaultX = bubbleEdgeX("right", outerSize.width, visualDiameter, monitor);
           const defaultY = bounds.y + bounds.height * 0.7 - outerSize.height / 2;
-          const next = clampBubbleToMonitor(defaultX, defaultY, outerSize.width, outerSize.height, monitor);
+          const next = clampBubbleToMonitor(defaultX, defaultY, outerSize.width, outerSize.height, monitor, visualDiameter);
           await appWin.setPosition(new PhysicalPosition(Math.round(next.x), Math.round(next.y)));
           setAlign(next.align);
           localStorage.setItem("orbitstart_bubble_align", next.align);
@@ -293,7 +333,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
     void runInit();
 
     appWin.setAlwaysOnTop(alwaysOnTop).catch(() => undefined);
-  }, [alwaysOnTop, sizeValue]);
+  }, [alwaysOnTop, sizeValue, snapToEdge]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) return;
@@ -486,14 +526,14 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
         const pos = await appWin.outerPosition();
         const outerSize = await getBubbleOuterSize(appWin, sizeValue, monitor);
         const bounds = monitorPhysicalBounds(monitor);
-        const margin = Math.round(8 * (monitor.scaleFactor || 1));
+        const visualDiameter = bubbleVisualDiameter(sizeValue, monitor);
         const centerX = pos.x + outerSize.width / 2;
         const monitorCenterX = bounds.x + bounds.width / 2;
         const isLeft = centerX < monitorCenterX;
 
-        const rawX = isLeft ? bounds.x + margin : (bounds.x + bounds.width - outerSize.width - margin);
+        const rawX = bubbleEdgeX(isLeft ? "left" : "right", outerSize.width, visualDiameter, monitor);
         const rawY = pos.y;
-        const next = clampBubbleToMonitor(rawX, rawY, outerSize.width, outerSize.height, monitor);
+        const next = clampBubbleToMonitor(rawX, rawY, outerSize.width, outerSize.height, monitor, visualDiameter);
 
         if (snapToEdge) {
           await animateWindowPosition(appWin, pos.x, pos.y, next.x, next.y, 160);
@@ -573,7 +613,6 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
           onPointerLeave={handlePointerLeave}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          title="点击打开 OrbitStart，右键展开快捷操作"
         >
           <img
             src={isMainBubbleHovered ? hoverImg : normalImg}

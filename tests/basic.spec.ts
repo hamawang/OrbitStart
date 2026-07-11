@@ -33,7 +33,9 @@ test.describe('OrbitStart E2E Basic Verification', () => {
 
   test('should route both dedicated floating-bubble windows without rendering the main app', async ({ page }) => {
     await page.goto('/?label=floating-bubble');
-    await expect(page.locator('.main-bubble')).toBeVisible({ timeout: 5000 });
+    const mainBubble = page.locator('.main-bubble');
+    await expect(mainBubble).toBeVisible({ timeout: 5000 });
+    await expect(mainBubble).not.toHaveAttribute('title');
     await expect(page.locator('body')).toHaveClass(/bubble-body/);
     await expect(page.locator('.app-shell')).toHaveCount(0);
 

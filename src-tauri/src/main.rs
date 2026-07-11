@@ -7367,6 +7367,8 @@ fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, 
     WebviewWindowBuilder::new(app, "floating-bubble", url)
         .title("OrbitStart Bubble")
         .inner_size(size, size)
+        .min_inner_size(48.0, 48.0)
+        .max_inner_size(96.0, 96.0)
         .decorations(false)
         .resizable(false)
         .transparent(true)
@@ -7627,12 +7629,17 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
 
                     let monitor_center_x = monitor_pos.x + (monitor_size.width as i32) / 2;
                     let bubble_center_x = bubble_pos.x + (bubble_size.width as i32) / 2;
+                    let bubble_visual_diameter = bubble_size.width.min(bubble_size.height) as i32;
+                    let bubble_horizontal_inset =
+                        ((bubble_size.width as i32 - bubble_visual_diameter) / 2).max(0);
+                    let bubble_visual_left = bubble_pos.x + bubble_horizontal_inset;
+                    let bubble_visual_right = bubble_visual_left + bubble_visual_diameter;
                     let is_left = bubble_center_x < monitor_center_x;
 
                     let raw_menu_x = if is_left {
-                        bubble_pos.x + bubble_size.width as i32 + physical_gap - physical_menu_bleed
+                        bubble_visual_right + physical_gap - physical_menu_bleed
                     } else {
-                        bubble_pos.x - physical_menu_width as i32 + physical_menu_bleed - physical_gap
+                        bubble_visual_left - physical_menu_width as i32 + physical_menu_bleed - physical_gap
                     };
                     let min_x = monitor_pos.x + (10.0 * scale_factor).round() as i32 - physical_menu_bleed;
                     let max_x = monitor_pos.x + monitor_size.width as i32

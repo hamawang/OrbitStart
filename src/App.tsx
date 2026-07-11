@@ -4905,12 +4905,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
                       const outerSize = await bubble.outerSize().catch(() => null);
                       const bubbleWidth = outerSize?.width ?? Math.round(configuredSize * scaleFactor);
                       const bubbleHeight = outerSize?.height ?? Math.round(configuredSize * scaleFactor);
-                      const margin = Math.round(8 * scaleFactor);
-                      const minX = monitorX + margin;
-                      const maxX = monitorX + monitorWidth - bubbleWidth - margin;
+                      const visualDiameter = Math.round(configuredSize * scaleFactor);
+                      const horizontalInset = Math.max(0, (bubbleWidth - visualDiameter) / 2);
+                      const margin = Math.round(4 * scaleFactor);
+                      const minX = monitorX + margin - horizontalInset;
+                      const maxX = monitorX + monitorWidth - visualDiameter - margin - horizontalInset;
                       const minY = monitorY + margin;
                       const maxY = monitorY + monitorHeight - bubbleHeight - margin;
-                      const rawX = monitorX + monitorWidth - bubbleWidth - Math.round(18 * scaleFactor);
+                      const rawX = monitorX + monitorWidth - bubbleWidth - margin;
                       const rawY = monitorY + monitorHeight * 0.7 - bubbleHeight / 2;
                       const defaultX = Math.min(maxX, Math.max(minX, rawX));
                       const defaultY = Math.min(maxY, Math.max(minY, rawY));

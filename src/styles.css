@@ -9620,3 +9620,16 @@ body.bubble-menu-body #root {
   }
 }
 
+.dialog-backdrop {
+  position: fixed !important;
+  inset: 0;
+  z-index: 11000 !important;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: rgba(5, 8, 18, 0.72);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  animation: backdrop-fade 160ms ease-out both;
+}
+
