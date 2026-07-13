@@ -287,10 +287,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.7.8 on the about page', async ({ page }) => {
+  test('should show version 0.7.9 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.7.8');
+    await expect(page.locator('.about-card')).toContainText('0.7.9');
   });
 
   test('should display and interact with the sub-directory selection modal', async ({ page }) => {
