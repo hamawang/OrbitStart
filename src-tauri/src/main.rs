@@ -3384,21 +3384,52 @@ fn create_item(app: tauri::AppHandle, input: OrbitItemInput) -> Result<OrbitItem
     Ok(item)
 }
 
-#[tauri::command]
-fn create_items_from_paths(
-    app: tauri::AppHandle,
-    paths: Vec<String>,
+fn create_items_from_paths_with_conn(
+    conn: &Connection,
+    paths: &[String],
+    group: Option<&str>,
 ) -> Result<Vec<OrbitItem>, String> {
-    let conn = open_db()?;
+    let destination_group = group
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "all");
+    if let Some(group_id) = &destination_group {
+        let group_exists = conn
+            .query_row(
+                "SELECT 1 FROM groups WHERE id = ?1",
+                params![group_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to validate drop target group: {error}"))?
+            .is_some();
+        if !group_exists {
+            return Err(format!("Drop target group does not exist: {group_id}"));
+        }
+    }
+
     let mut created = Vec::new();
     for path in paths
         .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        let input = item_input_from_dropped_path(path);
+        let mut input = item_input_from_dropped_path(path);
+        if let Some(group_id) = &destination_group {
+            input.group = group_id.clone();
+        }
         created.push(insert_item(&conn, &input)?);
     }
+    Ok(created)
+}
+
+#[tauri::command]
+fn create_items_from_paths(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+    group: Option<String>,
+) -> Result<Vec<OrbitItem>, String> {
+    let conn = open_db()?;
+    let created = create_items_from_paths_with_conn(&conn, &paths, group.as_deref())?;
     if !created.is_empty() {
         log_plugin_event(
             &conn,
@@ -3409,6 +3440,44 @@ fn create_items_from_paths(
         let _ = app.emit("orbit://refresh-resources", ());
     }
     Ok(created)
+}
+
+#[cfg(test)]
+mod dropped_resource_group_tests {
+    use super::*;
+
+    #[test]
+    fn assigns_dropped_resources_to_the_requested_group() {
+        let conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        let paths = vec![r#"C:\DropTest\DroppedProjectFolder"#.to_string()];
+
+        let created = create_items_from_paths_with_conn(&conn, &paths, Some("apps"))
+            .expect("drop import should succeed");
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].group, "apps");
+        assert_eq!(
+            get_item_by_target(&conn, &paths[0])
+                .expect("dropped resource query should succeed")
+                .expect("dropped resource should exist")
+                .group,
+            "apps"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_drop_target_groups() {
+        let conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&conn).expect("in-memory database should initialize");
+        let paths = vec![r#"C:\DropTest\UnknownGroupFolder"#.to_string()];
+
+        let result = create_items_from_paths_with_conn(&conn, &paths, Some("missing-group"));
+        assert!(result.is_err(), "unknown drop target should fail");
+        let error = result.err().expect("drop target error should be present");
+
+        assert!(error.contains("does not exist"));
+    }
 }
 
 fn obsidian_vault_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ObsidianVaultConfig> {

@@ -53,15 +53,64 @@ import {
   X,
   SlidersHorizontal,
   Keyboard,
-  Play
+  Play,
+  GripVertical
 } from "lucide-react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, closestCenter, pointerWithin, rectIntersection, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
-import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy } from "@dnd-kit/sortable";
+import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { emit, listen } from "@tauri-apps/api/event";
+
+class SmartMouseSensor extends MouseSensor {
+  static activators = [
+    {
+      eventName: "onMouseDown" as const,
+      handler: (event: any, options: any) => {
+        const element = event.target as HTMLElement;
+        const isSubTagHeader = element.closest(".subtag-resource-head");
+        if (isSubTagHeader) {
+          options.activationConstraint = {
+            delay: 250,
+            tolerance: 8,
+          };
+        } else {
+          options.activationConstraint = {
+            distance: 8,
+          };
+        }
+        return MouseSensor.activators[0].handler(event, options);
+      }
+    }
+  ];
+}
+
+class SmartTouchSensor extends TouchSensor {
+  static activators = [
+    {
+      eventName: "onTouchStart" as const,
+      handler: (event: any, options: any) => {
+        const element = event.target as HTMLElement;
+        const isSubTagHeader = element.closest(".subtag-resource-head");
+        if (isSubTagHeader) {
+          options.activationConstraint = {
+            delay: 250,
+            tolerance: 8,
+          };
+        } else {
+          options.activationConstraint = {
+            delay: 250,
+            tolerance: 8,
+          };
+        }
+        return TouchSensor.activators[0].handler(event, options);
+      }
+    }
+  ];
+}
+
 import { LocalGalaxyBackdrop } from "./components/LocalGalaxyBackdrop";
 import { TripPanel } from "./components/TripPanel";
 import { Workspaces } from "./components/Workspaces/Workspaces";
@@ -74,7 +123,7 @@ import {
   type EditMenuCommand
 } from "./desktop/contextMenu";
 import { installDesktopShell } from "./desktop/desktopShell";
-import { closeWindow, getAppWindow, minimizeWindow, startWindowDrag, startWindowResize, toggleMaximizeWindow } from "./desktop/windowControls";
+import { closeWindow, getAppWindow, minimizeWindow, startWindowResize, toggleMaximizeWindow } from "./desktop/windowControls";
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
 import { tripCategoryLabels } from "./lib/tripTemplates";
 import {
@@ -218,7 +267,9 @@ function WindowResizeEdges() {
           className={`window-resize-edge ${edge}`}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
-            event.preventDefault();
+            // Keep the browser's compatibility click events intact. Preventing the
+            // pointer-down event also suppresses the subsequent dblclick event in
+            // WebView2, which made a double-click on the resize border ineffective.
             event.stopPropagation();
             event.currentTarget.setPointerCapture(event.pointerId);
             activeDrag.current = {
@@ -511,6 +562,20 @@ function normalizeGroupValue(value: string, fallback = "") {
   return normalized || fallback;
 }
 
+function normalizeDroppedResourceGroup(groupId?: string | null) {
+  const normalized = String(groupId ?? "").trim();
+  return normalized && normalized !== "all" ? normalized : undefined;
+}
+
+function dropGroupIdFromElement(target: EventTarget | Element | null) {
+  const element = target instanceof Element ? target : null;
+  return element?.closest<HTMLElement>("[data-resource-drop-group-id]")?.dataset.resourceDropGroupId ?? null;
+}
+
+function dropGroupIdAtPoint(x: number, y: number) {
+  return dropGroupIdFromElement(document.elementFromPoint(x, y));
+}
+
 function itemHasGroup(item: Pick<OrbitItem, "group">, groupId: string) {
   return splitGroupIds(item.group).includes(groupId);
 }
@@ -553,7 +618,7 @@ type SubTagNode = {
   children: SubTagNode[];
 };
 
-function buildSubTagTree(sourceItems: OrbitItem[]) {
+function buildSubTagTree(sourceItems: OrbitItem[], subTagOrder: string[] = []) {
   const nodeMap = new Map<string, SubTagNode>();
   const ensureNode = (path: string) => {
     const cleanPath = cleanSubTag(path);
@@ -587,7 +652,16 @@ function buildSubTagTree(sourceItems: OrbitItem[]) {
   }
 
   const sortNodes = (nodes: SubTagNode[]) => {
-    nodes.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    nodes.sort((a, b) => {
+      const idxA = subTagOrder.indexOf(a.path);
+      const idxB = subTagOrder.indexOf(b.path);
+      if (idxA !== -1 && idxB !== -1) {
+        return idxA - idxB;
+      }
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return a.name.localeCompare(b.name, "zh-Hans-CN");
+    });
     nodes.forEach((node) => sortNodes(node.children));
   };
   sortNodes(roots);
@@ -596,6 +670,20 @@ function buildSubTagTree(sourceItems: OrbitItem[]) {
 
 function subTagNodeTotal(node: SubTagNode): number {
   return node.items.length + node.children.reduce((sum, child) => sum + subTagNodeTotal(child), 0);
+}
+
+function visibleSubTagItems(nodes: SubTagNode[], collapsedPaths: readonly string[]): OrbitItem[] {
+  const collapsed = new Set(collapsedPaths);
+  const items: OrbitItem[] = [];
+
+  const visit = (node: SubTagNode) => {
+    if (collapsed.has(node.path)) return;
+    items.push(...node.items);
+    node.children.forEach(visit);
+  };
+
+  nodes.forEach(visit);
+  return items;
 }
 
 function isTauriRuntime() {
@@ -766,6 +854,7 @@ interface SortableGroupTabProps {
   setActiveGroup: (id: string) => void;
   hotkey: string | null | undefined;
   hotkeyBinderEnabled: boolean;
+  externalDropTarget: boolean;
 }
 
 function SortableGroupTab({
@@ -773,7 +862,8 @@ function SortableGroupTab({
   activeGroup,
   setActiveGroup,
   hotkey,
-  hotkeyBinderEnabled
+  hotkeyBinderEnabled,
+  externalDropTarget
 }: SortableGroupTabProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: group.id,
@@ -792,8 +882,9 @@ function SortableGroupTab({
     <div
       ref={setNodeRef}
       style={style}
-      className={`group-tab-wrapper ${activeGroup === group.id ? "selected" : ""} ${isDragging ? "dragging" : ""}`}
+      className={`group-tab-wrapper ${activeGroup === group.id ? "selected" : ""} ${externalDropTarget ? "external-drop-target" : ""} ${isDragging ? "dragging" : ""}`}
       data-group-id={group.id}
+      data-resource-drop-group-id={group.id}
       {...attributes}
       {...listeners}
     >
@@ -820,7 +911,7 @@ interface SortableResourceRowProps {
   selectedIds: string[];
   batchMode: boolean;
   busy: boolean;
-  toggleSelected: (id: string) => void;
+  toggleSelected: (id: string, shiftKey?: boolean) => void;
   openItem: (item: OrbitItem) => void;
   groups: OrbitGroup[];
   tripCounts: Record<string, number>;
@@ -852,6 +943,100 @@ function DroppableSubTagSection({ path, children }: { path: string; children: Re
           <span className="droppable-overlay-text">移动到此处</span>
         </div>
       )}
+    </div>
+  );
+}
+
+interface SortableSubTagSectionProps {
+  node: SubTagNode;
+  depth: number;
+  collapsedSubTagPaths: string[];
+  settings: any;
+  renderResourceCards: (items: OrbitItem[]) => React.ReactNode;
+  renderSubTagResourceSection: (node: SubTagNode, depth: number) => React.ReactNode;
+  toggleSubTagCollapsed: (path: string) => void;
+}
+
+function SortableSubTagSection({
+  node,
+  depth,
+  collapsedSubTagPaths,
+  settings,
+  renderResourceCards,
+  renderSubTagResourceSection,
+  toggleSubTagCollapsed,
+}: SortableSubTagSectionProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: `subtag-sortable-${node.path}`,
+  });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : undefined,
+  };
+
+  const collapsed = collapsedSubTagPaths.includes(node.path);
+  const total = subTagNodeTotal(node);
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <DroppableSubTagSection path={node.path}>
+        <section
+          className="subtag-resource-section"
+          style={{ "--subtag-depth": depth } as CSSProperties}
+        >
+          <header className="subtag-resource-head">
+            <div
+              className="subtag-drag-handle"
+              {...attributes}
+              {...listeners}
+              style={{
+                cursor: "grab",
+                display: "flex",
+                alignItems: "center",
+                marginRight: "6px",
+                color: "var(--text-muted)",
+              }}
+            >
+              <GripVertical size={14} />
+            </div>
+            <button
+              type="button"
+              className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
+              onClick={() => toggleSubTagCollapsed(node.path)}
+              aria-label={collapsed ? "展开子目录" : "收起子目录"}
+              aria-expanded={!collapsed}
+            >
+              {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+            </button>
+            <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
+              <strong>{node.name}</strong>
+              <span>{total} 个资源</span>
+            </div>
+          </header>
+
+          {!collapsed && (
+            <div className="subtag-resource-body">
+              {node.items.length > 0 && (
+                <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
+                  {renderResourceCards(node.items)}
+                </div>
+              )}
+              <SortableContext items={node.children.map(child => `subtag-sortable-${child.path}`)} strategy={verticalListSortingStrategy}>
+                {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
+              </SortableContext>
+            </div>
+          )}
+        </section>
+      </DroppableSubTagSection>
     </div>
   );
 }
@@ -896,9 +1081,10 @@ function SortableResourceRow({
   isSimple = false,
   densityFactor = 0
 }: SortableResourceRowProps) {
+  const dragDisabled = batchMode || isOverlay;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
-    disabled: batchMode || isOverlay,
+    disabled: dragDisabled,
   });
 
   const style = {
@@ -923,19 +1109,27 @@ function SortableResourceRow({
         isDragging ? "placeholder" : isOverlay ? "dragging" : ""
       } ${isSimple ? "simple-mode" : ""}`}
       data-resource-id={item.id}
-      {...(isOverlay ? {} : attributes)}
-      {...(isOverlay ? {} : listeners)}
+      {...(dragDisabled ? {} : attributes)}
+      {...(dragDisabled ? {} : listeners)}
       onDragStart={(e: React.DragEvent) => e.preventDefault()}
     >
       {batchMode && !isOverlay && (
         <label className="tile-check" onPointerDown={(e) => e.stopPropagation()}>
-          <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} />
+          <input
+            type="checkbox"
+            checked={selectedIds.includes(item.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleSelected(item.id, event.shiftKey);
+            }}
+            onChange={() => undefined}
+          />
         </label>
       )}
       <button
         type="button"
         className="resource-launch"
-        onClick={() => (batchMode ? toggleSelected(item.id) : openItem(item))}
+        onClick={(event) => (batchMode ? toggleSelected(item.id, event.shiftKey) : openItem(item))}
         disabled={busy}
       >
         <span
@@ -1223,6 +1417,19 @@ export function MainApp({ windowLabel }: MainAppProps) {
   } | null>(null);
   const [subTagSelectSearch, setSubTagSelectSearch] = useState("");
 
+  const [subTagOrder, setSubTagOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("storedSubTagOrder");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem("storedSubTagOrder", JSON.stringify(subTagOrder));
+  }, [subTagOrder]);
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
@@ -1240,9 +1447,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [busy, setBusy] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [batchGroup, setBatchGroup] = useState("apps");
   const [selectedPlugin, setSelectedPlugin] = useState<OrbitPluginManifest | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [externalDropGroupId, setExternalDropGroupId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [autostartState, setAutostartState] = useState(false);
   const [commandBarOpen, setCommandBarOpen] = useState(false);
@@ -1314,6 +1523,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const contextEditTargetRef = useRef<HTMLElement | null>(null);
   const lastPointerRef = useRef({ x: 24, y: 24 });
   const dropInProgressRef = useRef(false);
+  const activeGroupRef = useRef(activeGroup);
+
+  useEffect(() => {
+    activeGroupRef.current = activeGroup;
+  }, [activeGroup]);
 
   const [hotkeysBoundToGroup, setHotkeysBoundToGroup] = useState<Record<string, string>>({});
   const [groupDragActiveId, setGroupDragActiveId] = useState<string | null>(null);
@@ -1580,12 +1794,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
   );
 
   const sensors = useSensors(
-    useSensor(MouseSensor, {
+    useSensor(SmartMouseSensor, {
       activationConstraint: {
         distance: 8,
       },
     }),
-    useSensor(TouchSensor, {
+    useSensor(SmartTouchSensor, {
       activationConstraint: {
         delay: 250,
         tolerance: 8,
@@ -1677,18 +1891,60 @@ export function MainApp({ windowLabel }: MainAppProps) {
     const activeIdStr = active.id as string;
     const overIdStr = over.id as string;
 
-    // 1. Drop on droppable subtag container or root container
-    if (overIdStr.startsWith("droppable-subtag-")) {
-      const targetSubTag = overIdStr === "droppable-subtag-root" ? "" : overIdStr.replace("droppable-subtag-", "");
-      const activeItem = items.find((item) => item.id === activeIdStr);
-      if (activeItem && (activeItem.subTag || "") !== targetSubTag) {
-        setBusy(true);
-        updateItem({ ...activeItem, subTag: targetSubTag })
-          .then(() => reload())
-          .catch((err) => setToast(`移动失败: ${String(err)}`))
-          .finally(() => setBusy(false));
+    // Sub-directory drag sorting
+    if (activeIdStr.startsWith("subtag-sortable-")) {
+      const activePath = activeIdStr.replace("subtag-sortable-", "");
+      let overPath = overIdStr.startsWith("subtag-sortable-")
+        ? overIdStr.replace("subtag-sortable-", "")
+        : overIdStr.startsWith("droppable-subtag-")
+        ? overIdStr.replace("droppable-subtag-", "")
+        : "";
+
+      if (!overPath) {
+        const overItem = items.find((item) => item.id === overIdStr);
+        if (overItem && overItem.subTag) {
+          overPath = overItem.subTag;
+        }
+      }
+
+      if (overPath && activePath !== overPath) {
+        setSubTagOrder((prev) => {
+          const currentOrder = [...prev];
+          if (!currentOrder.includes(activePath)) {
+            currentOrder.push(activePath);
+          }
+          if (!currentOrder.includes(overPath)) {
+            currentOrder.push(overPath);
+          }
+          const oldIndex = currentOrder.indexOf(activePath);
+          const newIndex = currentOrder.indexOf(overPath);
+          if (oldIndex === -1 || newIndex === -1) return prev;
+          return arrayMove(currentOrder, oldIndex, newIndex);
+        });
       }
       return;
+    }
+
+    // 1. Drop resource card on a subtag target (either droppable or sortable subtag ID)
+    if (!activeIdStr.startsWith("subtag-sortable-")) {
+      let targetSubTag: string | null = null;
+      if (overIdStr.startsWith("droppable-subtag-")) {
+        targetSubTag = overIdStr === "droppable-subtag-root" ? "" : overIdStr.replace("droppable-subtag-", "");
+      } else if (overIdStr.startsWith("subtag-sortable-")) {
+        targetSubTag = overIdStr.replace("subtag-sortable-", "");
+      }
+
+      if (targetSubTag !== null) {
+        const activeItem = items.find((item) => item.id === activeIdStr);
+        if (activeItem && (activeItem.subTag || "") !== targetSubTag) {
+          setBusy(true);
+          updateItem({ ...activeItem, subTag: targetSubTag })
+            .then(() => reload())
+            .catch((err) => setToast(`移动失败: ${String(err)}`))
+            .finally(() => setBusy(false));
+        }
+        return;
+      }
     }
 
     // 2. Drop on another card belonging to a different subTag
@@ -2077,23 +2333,36 @@ export function MainApp({ windowLabel }: MainAppProps) {
   useEffect(() => {
     const currentWindow = getAppWindow();
     const unlisteners: (() => void)[] = [];
-    if (currentWindow) {
-      Promise.all([
-        currentWindow.listen<any>("tauri://drag-enter", () => {
+    if (currentWindow && isTauriRuntime()) {
+      let scaleFactor = window.devicePixelRatio || 1;
+      void currentWindow.scaleFactor().then((value) => {
+        if (value > 0) scaleFactor = value;
+      }).catch(() => undefined);
+
+      currentWindow.onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "leave") {
+          setDragActive(false);
+          setExternalDropGroupId(null);
+          return;
+        }
+
+        const logicalPosition = payload.position.toLogical(scaleFactor);
+        const destinationGroup = normalizeDroppedResourceGroup(
+          dropGroupIdAtPoint(logicalPosition.x, logicalPosition.y) ?? activeGroupRef.current
+        );
+
+        if (payload.type === "enter" || payload.type === "over") {
           setDragActive(true);
-        }),
-        currentWindow.listen<any>("tauri://drag-leave", () => {
-          setDragActive(false);
-        }),
-        currentWindow.listen<any>("tauri://drag-drop", (event) => {
-          setDragActive(false);
-          const paths = event.payload?.paths;
-          if (Array.isArray(paths)) {
-            void createDroppedResources(paths);
-          }
-        })
-      ]).then((fns) => {
-        unlisteners.push(...fns);
+          setExternalDropGroupId(destinationGroup ?? null);
+          return;
+        }
+
+        setDragActive(false);
+        setExternalDropGroupId(null);
+        void createDroppedResources(payload.paths, destinationGroup);
+      }).then((unlisten) => {
+        unlisteners.push(unlisten);
       }).catch(() => undefined);
     }
 
@@ -2109,19 +2378,32 @@ export function MainApp({ windowLabel }: MainAppProps) {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       setDragActive(true);
+      const destinationGroup = normalizeDroppedResourceGroup(
+        dropGroupIdFromElement(event.target)
+        ?? dropGroupIdAtPoint(event.clientX, event.clientY)
+        ?? activeGroupRef.current
+      );
+      setExternalDropGroupId(destinationGroup ?? null);
     };
     const handleBrowserLeave = (event: DragEvent) => {
       event.preventDefault();
       if (event.target === document.body || event.target === document.documentElement) {
         setDragActive(false);
+        setExternalDropGroupId(null);
       }
     };
     const handleBrowserDrop = (event: DragEvent) => {
       event.preventDefault();
       setDragActive(false);
+      const destinationGroup = normalizeDroppedResourceGroup(
+        dropGroupIdFromElement(event.target)
+        ?? dropGroupIdAtPoint(event.clientX, event.clientY)
+        ?? activeGroupRef.current
+      );
+      setExternalDropGroupId(null);
       const paths = droppedPathsFromBrowserEvent(event);
       if (paths.length > 0) {
-        void createDroppedResources(paths);
+        void createDroppedResources(paths, destinationGroup);
       } else if (!isTauriRuntime()) {
         setToast("浏览器预览无法读取本地路径，请在桌面版中拖拽文件");
       }
@@ -2319,8 +2601,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
 
     // Clean up batch state
-    setSelectedIds([]);
-    setBatchMode(false);
+    exitBatchMode();
 
     localStorage.setItem("orbitstart.workspaces.editing_id", newWsId);
     setActiveView("workspaces");
@@ -2391,7 +2672,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
     [renderedItems]
   );
 
-  const subTagTree = useMemo(() => buildSubTagTree(renderedItems), [renderedItems]);
+  const subTagTree = useMemo(() => buildSubTagTree(renderedItems, subTagOrder), [renderedItems, subTagOrder]);
+  const selectableItemsInView = useMemo(
+    () => [...rootResourceItems, ...visibleSubTagItems(subTagTree, collapsedSubTagPaths)],
+    [collapsedSubTagPaths, rootResourceItems, subTagTree]
+  );
 
   const favoriteItems = filteredItems.filter((item) => item.favorite);
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
@@ -2540,17 +2825,21 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
-  async function createDroppedResources(paths: string[]) {
+  async function createDroppedResources(paths: string[], destinationGroupId?: string) {
     const cleanPaths = paths.map((path) => path.trim()).filter(Boolean);
     if (cleanPaths.length === 0 || dropInProgressRef.current) return;
 
+    const destinationGroup = normalizeDroppedResourceGroup(destinationGroupId);
     dropInProgressRef.current = true;
     setBusy(true);
     try {
-      const created = await createItemsFromPaths(cleanPaths);
+      const created = await createItemsFromPaths(cleanPaths, destinationGroup);
       await reload();
       setActiveView("dashboard");
-      setToast(`已通过拖拽创建 ${created.length} 个资源`);
+      if (destinationGroup) {
+        setActiveGroup(destinationGroup);
+      }
+      setToast(`已通过拖拽创建 ${created.length} 个资源${destinationGroup ? "，并加入目标标签" : ""}`);
     } catch (error) {
       setToast(`拖拽创建失败：${String(error)}`);
     } finally {
@@ -2721,13 +3010,42 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
-  function toggleSelected(id: string) {
+  function toggleSelected(id: string, shiftKey = false) {
+    const anchorIndex = selectionAnchorId ? selectableItemsInView.findIndex((item) => item.id === selectionAnchorId) : -1;
+    const targetIndex = selectableItemsInView.findIndex((item) => item.id === id);
+
+    if (shiftKey && anchorIndex !== -1 && targetIndex !== -1) {
+      const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+      const rangeIds = selectableItemsInView.slice(start, end + 1).map((item) => item.id);
+      setSelectedIds((current) => Array.from(new Set([...current, ...rangeIds])));
+      return;
+    }
+
+    const wasSelected = selectedIds.includes(id);
     setSelectedIds((current) => (current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id]));
+    setSelectionAnchorId(wasSelected ? null : id);
+  }
+
+  function enterBatchMode() {
+    setBatchMode(true);
+    setSelectedIds([]);
+    setSelectionAnchorId(null);
   }
 
   function exitBatchMode() {
     setBatchMode(false);
     setSelectedIds([]);
+    setSelectionAnchorId(null);
+  }
+
+  function selectAllCurrent() {
+    setSelectedIds(filteredItems.map((item) => item.id));
+    setSelectionAnchorId(null);
+  }
+
+  function clearSelectedItems() {
+    setSelectedIds([]);
+    setSelectionAnchorId(null);
   }
 
   async function batchDeleteSelected() {
@@ -2834,42 +3152,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }
 
   function renderSubTagResourceSection(node: SubTagNode, depth = 0) {
-    const collapsed = collapsedSubTagPaths.includes(node.path);
-    const total = subTagNodeTotal(node);
     return (
-      <DroppableSubTagSection path={node.path} key={node.path}>
-        <section
-          className="subtag-resource-section"
-          style={{ "--subtag-depth": depth } as CSSProperties}
-        >
-          <header className="subtag-resource-head">
-            <button
-              type="button"
-              className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
-              onClick={() => toggleSubTagCollapsed(node.path)}
-              aria-label={collapsed ? "展开子目录" : "收起子目录"}
-              aria-expanded={!collapsed}
-            >
-              {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-            </button>
-            <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
-              <strong>{node.name}</strong>
-              <span>{total} 个资源</span>
-            </div>
-          </header>
-
-          {!collapsed && (
-            <div className="subtag-resource-body">
-              {node.items.length > 0 && (
-                <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
-                  {renderResourceCards(node.items)}
-                </div>
-              )}
-              {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
-            </div>
-          )}
-        </section>
-      </DroppableSubTagSection>
+      <SortableSubTagSection
+        key={node.path}
+        node={node}
+        depth={depth}
+        collapsedSubTagPaths={collapsedSubTagPaths}
+        settings={settings}
+        renderResourceCards={renderResourceCards}
+        renderSubTagResourceSection={renderSubTagResourceSection}
+        toggleSubTagCollapsed={toggleSubTagCollapsed}
+      />
     );
   }
 
@@ -3541,17 +3834,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
     { id: "logs", title: "日志", icon: <Database size={21} /> }
   ];
 
-  const handleTitlebarPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest(".window-controls")) return;
-    startWindowDrag();
-  };
-
-  const handleTitlebarDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest(".window-controls")) return;
-    toggleMaximizeWindow();
-  };
-
   async function persistWorkbenchSetting(key: string, value: boolean) {
     const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) as keyof AppSettings;
     if (key === "workbench_visible") {
@@ -3926,6 +4208,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   setActiveGroup={setActiveGroup}
                   hotkey={hotkeysBoundToGroup[group.id]}
                   hotkeyBinderEnabled={hotkeyBinderEnabled}
+                  externalDropTarget={externalDropGroupId === group.id}
                 />
               ))}
             </SortableContext>
@@ -3961,7 +4244,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
               >
                 添加子目录
               </button>
-              <button type="button" className="secondary-action compact-action" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}>
+              <button type="button" className="secondary-action compact-action" onClick={() => (batchMode ? exitBatchMode() : enterBatchMode())}>
                 {batchMode ? "退出批量" : "批量管理"}
               </button>
             </div>
@@ -3970,8 +4253,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
           {batchMode && (
             <div className="batch-toolbar">
               <strong>已选 {selectedIds.length} 个</strong>
-              <button type="button" onClick={() => setSelectedIds(filteredItems.map((item) => item.id))}>全选当前</button>
-              <button type="button" onClick={() => setSelectedIds([])}>清空</button>
+              <span className="batch-selection-hint">Shift + 点击可连续选择</span>
+              <button type="button" onClick={selectAllCurrent}>全选当前</button>
+              <button type="button" onClick={clearSelectedItems}>清空</button>
               {workspacesFeatureEnabled && (
                 <button type="button" onClick={createWorkspaceFromActiveGroup} disabled={busy || selectedIds.length === 0}>创建为工作区</button>
               )}
@@ -4019,7 +4303,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
                       <p className="eyebrow">Sub Tags</p>
                       <h2>子目录</h2>
                     </div>
-                    {subTagTree.map((node) => renderSubTagResourceSection(node))}
+                    <SortableContext items={subTagTree.map(node => `subtag-sortable-${node.path}`)} strategy={verticalListSortingStrategy}>
+                      {subTagTree.map((node) => renderSubTagResourceSection(node))}
+                    </SortableContext>
                   </section>
                 </>
               ) : (
@@ -4651,7 +4937,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         <p>配置首页资源管理方式与本地程序扫描入口。</p>
         <div className="setting-list action-stack">
           <label className="setting-inline">
-            <input type="checkbox" checked={batchMode} onChange={(event) => (event.target.checked ? setBatchMode(true) : exitBatchMode())} />
+            <input type="checkbox" checked={batchMode} onChange={(event) => (event.target.checked ? enterBatchMode() : exitBatchMode())} />
             批量操作模式
           </label>
           <label className="setting-inline">
@@ -4986,7 +5272,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.7.8</strong>版本</span>
+          <span><strong>0.7.9</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -5859,13 +6145,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
             />
           )}
           <WindowResizeEdges />
-          <header className="window-titlebar todo-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
-            <div className="window-brand" data-tauri-drag-region>
+          <header className="window-titlebar todo-titlebar" data-tauri-drag-region="deep">
+            <div className="window-brand">
               <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
               <span>Todo</span>
             </div>
-            <div className="window-drag-fill" data-tauri-drag-region />
-            <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="window-drag-fill" />
+            <div className="window-controls" data-tauri-drag-region="false">
               <button type="button" className={`pin-window ${todoPanelPinned ? "is-pinned" : ""}`} aria-label="Pin always on top" title={todoPanelPinned ? "Unpin" : "Pin always on top"} onClick={() => void toggleTodoPanelPin()}>
                 {todoPanelPinned ? <PinOff size={14} /> : <Pin size={14} />}
               </button>
@@ -5951,13 +6237,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
             />
           )}
           <WindowResizeEdges />
-          <header className="window-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
-            <div className="window-brand" data-tauri-drag-region>
+          <header className="window-titlebar" data-tauri-drag-region="deep">
+            <div className="window-brand">
               <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
               <span>{auxTitle}</span>
             </div>
-            <div className="window-drag-fill" data-tauri-drag-region />
-            <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="window-drag-fill" />
+            <div className="window-controls" data-tauri-drag-region="false">
               <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
               <button type="button" aria-label="Maximize or restore" title="Maximize or restore" onClick={toggleMaximizeWindow}>□</button>
               <button type="button" aria-label="Close" title="Close" className="close-window" onClick={closeWindow}>×</button>
@@ -6076,13 +6362,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
         />
       )}
       <WindowResizeEdges />
-      <header className="window-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
-        <div className="window-brand" data-tauri-drag-region>
+      <header className="window-titlebar" data-tauri-drag-region="deep">
+        <div className="window-brand">
           <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
           <span>OrbitStart</span>
         </div>
-        <div className="window-drag-fill" data-tauri-drag-region />
-        <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
+        <div className="window-drag-fill" />
+        <div className="window-controls" data-tauri-drag-region="false">
           <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
           <button type="button" aria-label="Maximize or restore" title="Maximize or restore" onClick={toggleMaximizeWindow}>□</button>
           <button type="button" aria-label="Close" title="Close" className="close-window" onClick={closeWindow}>×</button>
@@ -6212,7 +6498,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <div>
             <Download size={28} />
             <strong>释放以添加资源</strong>
-            <span>支持桌面快捷方式、文件、文件夹和脚本</span>
+            <span>
+              {externalDropGroupId
+                ? `将加入「${groups.find((group) => group.id === externalDropGroupId)?.title ?? externalDropGroupId}」标签`
+                : "支持桌面快捷方式、文件、文件夹和脚本"}
+            </span>
           </div>
         </section>
       )}

@@ -256,12 +256,16 @@ function makeDroppedInputBase(title: string, path: string): OrbitItemInput {
   };
 }
 
-export async function createItemsFromPaths(paths: string[]): Promise<OrbitItem[]> {
+export async function createItemsFromPaths(paths: string[], group?: string): Promise<OrbitItem[]> {
   try {
-    return await invokeNative<OrbitItem[]>("create_items_from_paths", { paths });
-  } catch {
+    return await invokeNative<OrbitItem[]>("create_items_from_paths", { paths, group: group ?? null });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const current = readBrowserItems();
-    const created = paths.map((path) => createBrowserItem(fallbackInputFromPath(path)));
+    const created = paths.map((path) => {
+      const input = fallbackInputFromPath(path);
+      return createBrowserItem(group ? { ...input, group } : input);
+    });
     writeBrowserItems([...created, ...current]);
     return created;
   }

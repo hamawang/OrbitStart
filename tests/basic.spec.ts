@@ -256,6 +256,37 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.resource-progressive-load')).toContainText('240 / 250');
   });
 
+  test('should assign externally dropped resources to the destination group', async ({ page }) => {
+    await page.evaluate(() => {
+      const target = document.querySelector<HTMLElement>('[data-resource-drop-group-id="apps"] .group-tab-btn');
+      if (!target) throw new Error('Apps group drop target not found');
+      const box = target.getBoundingClientRect();
+      const dataTransfer = new DataTransfer();
+      const file = new File([''], 'DroppedProjectFolder', { type: 'application/octet-stream' });
+      Object.defineProperty(file, 'path', { value: 'C:\\DropTest\\DroppedProjectFolder' });
+      dataTransfer.items.add(file);
+      const eventInit: DragEventInit = {
+        bubbles: true,
+        cancelable: true,
+        clientX: box.left + box.width / 2,
+        clientY: box.top + box.height / 2,
+        dataTransfer
+      };
+      target.dispatchEvent(new DragEvent('dragenter', eventInit));
+      target.dispatchEvent(new DragEvent('dragover', eventInit));
+      target.dispatchEvent(new DragEvent('drop', eventInit));
+    });
+
+    await expect(page.locator('[data-resource-drop-group-id="apps"] .group-tab-btn')).toHaveClass(/selected/);
+    const droppedResource = page.locator('.resource-row', { hasText: 'DroppedProjectFolder' });
+    await expect(droppedResource).toBeVisible();
+    const storedGroup = await page.evaluate(() => {
+      const items = JSON.parse(window.localStorage.getItem('orbitstart.browser.items') ?? '[]');
+      return items.find((item: { title?: string }) => item.title === 'DroppedProjectFolder')?.group;
+    });
+    expect(storedGroup).toBe('apps');
+  });
+
   test('should show version 0.7.8 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });

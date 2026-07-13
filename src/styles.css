@@ -256,7 +256,7 @@ textarea:focus-visible {
   background: var(--bg);
 }
 
-.app-shell > :not(.local-galaxy-backdrop):not(.palette-backdrop) {
+.app-shell > :not(.local-galaxy-backdrop):not(.palette-backdrop):not(.window-resize-edges) {
   position: relative;
   z-index: 2;
 }
@@ -1880,6 +1880,12 @@ kbd {
 
 .batch-toolbar strong {
   margin-right: auto;
+}
+
+.batch-selection-hint {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .batch-toolbar button,
@@ -7755,6 +7761,13 @@ input.recording {
   pointer-events: auto;
 }
 
+.group-tab-wrapper.external-drop-target .group-tab-btn {
+  border-color: rgba(39, 215, 198, 0.9) !important;
+  background: rgba(39, 215, 198, 0.18) !important;
+  color: var(--text) !important;
+  box-shadow: 0 0 0 2px rgba(39, 215, 198, 0.16), 0 0 24px rgba(39, 215, 198, 0.22) !important;
+}
+
 /* Tab Hotkey Badge */
 .tab-hotkey-badge {
   position: absolute;
@@ -9633,3 +9646,38 @@ body.bubble-menu-body #root {
   animation: backdrop-fade 160ms ease-out both;
 }
 
+/* Sortable Subtag Drag Styling */
+.sortable-subtag-header {
+  position: relative;
+  display: flex !important;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.subtag-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: grab;
+  transition: all 0.2s ease;
+  margin-left: 4px;
+  opacity: 0.3;
+}
+
+.subtag-resource-head:hover .subtag-drag-handle {
+  opacity: 0.8;
+}
+
+.subtag-drag-handle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.subtag-drag-handle:active {
+  cursor: grabbing;
+  background: rgba(255, 255, 255, 0.12);
+}
