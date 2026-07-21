@@ -1,6 +1,6 @@
 [package]
 name = "orbitstart"
-version = "0.7.9"
+version = "0.8.0"
 description = "OrbitStart plugin-driven Windows launcher"
 authors = ["OrbitStart contributors"]
 edition = "2021"
@@ -20,3 +20,7 @@ tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
+
+[features]
+default = []
+lite = []

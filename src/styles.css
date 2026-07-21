@@ -20,13 +20,24 @@
   --text: #f4ebd3;
   --soft: #c9bfa8;
   --muted: #8f9aaf;
+  --text-strong: var(--text);
+  --text-muted: var(--muted);
   --gold: #d6a85c;
   --teal: #27d7c6;
   --teal-soft: #65f1e4;
   --danger: #ff7a90;
   --ok: #80e6a7;
-  --warning: #e9bd68;
   --theme-accent: var(--accent, var(--teal));
+
+  --graph-bg: var(--bg-deep);
+  --graph-dot: color-mix(in srgb, var(--text) 5%, transparent);
+  --graph-node-bg: var(--surface);
+  --graph-node-root-bg: color-mix(in srgb, var(--gold) 15%, var(--surface));
+  --graph-node-border: var(--line-strong);
+  --graph-node-text: var(--text);
+  --graph-node-text-muted: var(--soft);
+  --graph-node-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+  --graph-node-root-shadow: 0 0 16px color-mix(in srgb, var(--gold) 25%, transparent);
 
   --space-1: 4px;
   --space-2: 8px;
@@ -1751,6 +1762,8 @@ kbd {
   min-width: 0;
   padding-top: 8px;
   padding-bottom: 4px;
+  position: relative;
+  z-index: 10;
 }
 
 .group-tabs {
@@ -1759,10 +1772,14 @@ kbd {
   gap: var(--space-2);
   overflow-x: auto;
   min-width: 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  margin-top: -8px;
 }
 
 .group-tabs-main {
-  padding: 0;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .group-tabs button {
@@ -1793,6 +1810,7 @@ kbd {
   transform: none !important;
   z-index: 1 !important;
   flex: 0 0 auto;
+  margin-top: -8px;
 }
 
 .group-tabs-toggle:hover,
@@ -1976,7 +1994,7 @@ kbd {
 
 .subtag-resource-title {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
@@ -1990,6 +2008,20 @@ kbd {
 .subtag-resource-title span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.subtag-hotkey-badge {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  background-color: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  color: var(--text-muted, #888);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
 }
 
 .subtag-resource-body {
@@ -4175,9 +4207,19 @@ kbd {
 }
 
 
-/* Atelier Zero (Warm Editorial) Theme Overrides */
+:root[data-theme="orbit-dark"],
+:root[data-theme="creative-mode"],
 :root[data-theme-style="atelier"] {
   --elev-raised: 0 8px 24px rgba(32, 25, 20, 0.08);
+  --graph-bg: var(--bg-deep, #faf6ee);
+  --graph-dot: color-mix(in srgb, var(--text) 8%, transparent);
+  --graph-node-bg: var(--surface, #fcfaf2);
+  --graph-node-root-bg: color-mix(in srgb, var(--gold) 15%, var(--surface, #fcfaf2));
+  --graph-node-border: var(--line-strong, rgba(214, 168, 92, 0.4));
+  --graph-node-text: var(--text, #2c251e);
+  --graph-node-text-muted: var(--soft, #8f8576);
+  --graph-node-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+  --graph-node-root-shadow: 0 0 16px color-mix(in srgb, var(--accent, var(--gold)) 20%, transparent);
 }
 
 /* 1. Typography */
@@ -8864,7 +8906,7 @@ body.bubble-menu-body #root {
 }
 
 .contextmenu-item:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: var(--surface-soft, rgba(255, 255, 255, 0.08)) !important;
   color: var(--text-strong) !important;
 }
 .contextmenu-item.text-danger:hover {
@@ -8872,15 +8914,16 @@ body.bubble-menu-body #root {
   color: #ff6b6b !important;
 }
 
-/* Force dark style on workspace node settings selects option dropdowns */
+/* Force theme-appropriate style on workspace node settings selects option dropdowns */
 .graph-node-details-drawer select option {
-  background-color: #161a22 !important;
-  color: var(--text-strong, #ffffff) !important;
+  background-color: var(--field) !important;
+  color: var(--text-strong, var(--text)) !important;
 }
 
 .graph-node-details-drawer select {
-  background-color: #12151e !important;
-  color: #ffffff !important;
+  background-color: var(--field) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
 }
 
 /* Shrunk/Compact KPI statistics cards */
@@ -9681,3 +9724,10 @@ body.bubble-menu-body #root {
   cursor: grabbing;
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* Subtag focus highlight styles */
+.subtag-droppable-wrapper.focus-highlight {
+  background: rgba(var(--accent-rgb, 122, 144, 255), 0.12) !important;
+  box-shadow: 0 0 0 2px var(--accent) !important;
+}
+

@@ -910,7 +910,7 @@ fn plugin(
 }
 
 fn default_plugins() -> Vec<PluginManifest> {
-    vec![
+    let mut list = vec![
         plugin(
             "core-command-palette",
             "Command Palette",
@@ -1002,25 +1002,27 @@ fn default_plugins() -> Vec<PluginManifest> {
             vec![permission("fs:search", "搜索本地文件", "medium")],
             contributes(1, 1, 0, 0),
         ),
-        plugin(
-            "core-obsidian",
-            "Obsidian",
-            "Read-only local vault indexing for Markdown notes and checkbox tasks.",
-            vec![
-                permission(
-                    "fs:read-obsidian",
-                    "Read selected Obsidian vaults",
-                    "medium",
-                ),
-                permission(
-                    "shell:open-obsidian",
-                    "Open notes through Obsidian protocol",
-                    "medium",
-                ),
-            ],
-            contributes(1, 1, 0, 1),
-        ),
-    ]
+    ];
+    #[cfg(not(feature = "lite"))]
+    list.push(plugin(
+        "core-obsidian",
+        "Obsidian",
+        "Read-only local vault indexing for Markdown notes and checkbox tasks.",
+        vec![
+            permission(
+                "fs:read-obsidian",
+                "Read selected Obsidian vaults",
+                "medium",
+            ),
+            permission(
+                "shell:open-obsidian",
+                "Open notes through Obsidian protocol",
+                "medium",
+            ),
+        ],
+        contributes(1, 1, 0, 1),
+    ));
+    list
 }
 
 fn seed_plugin_states(conn: &Connection) -> Result<(), String> {
@@ -1189,6 +1191,16 @@ fn all_plugins(conn: &Connection) -> Result<Vec<PluginManifest>, String> {
     let settings = app_settings(conn)?;
     let mut plugins = default_plugins();
     plugins.extend(read_local_plugin_manifests()?);
+
+    #[cfg(feature = "lite")]
+    {
+        plugins.retain(|p| {
+            p.id != "tips-search" && 
+            p.id != "obsidian-search" && 
+            p.id != "workspaces" && 
+            p.id != "core-obsidian"
+        });
+    }
 
     let mut merged = Vec::new();
     for mut plugin in plugins {
@@ -3324,8 +3336,8 @@ fn update_workspace_hotkey(
         let shortcut_manager = app.global_shortcut();
 
         if !old_hotkey.is_empty() {
-            if let Ok(old_shortcut) = old_hotkey
-                .to_lowercase()
+            let normalized_old = normalize_hotkey(&old_hotkey);
+            if let Ok(old_shortcut) = normalized_old
                 .parse::<tauri_plugin_global_shortcut::Shortcut>()
             {
                 let _ = shortcut_manager.unregister(old_shortcut);
@@ -3334,8 +3346,8 @@ fn update_workspace_hotkey(
 
         if let Some(ref hotkey) = new_hotkey {
             if !hotkey.is_empty() {
-                let new_shortcut = hotkey
-                    .to_lowercase()
+                let normalized_new = normalize_hotkey(hotkey);
+                let new_shortcut = normalized_new
                     .parse::<tauri_plugin_global_shortcut::Shortcut>()
                     .map_err(|e| format!("解析快捷键失败，格式可能不正确: {}", e))?;
 
@@ -3372,6 +3384,99 @@ fn update_workspace_hotkey(
             conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
                 .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn get_subtag_hotkeys() -> Result<std::collections::HashMap<String, String>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_subtag:%'")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        if let Ok((key, value)) = row {
+            if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
+                map.insert(subtag_path.to_string(), value);
+            }
+        }
+    }
+    Ok(map)
+}
+
+#[tauri::command]
+fn update_subtag_hotkey(
+    app: tauri::AppHandle,
+    subtag_path: String,
+    new_hotkey: Option<String>,
+) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let setting_key = format!("hotkey_subtag:{}", subtag_path);
+        let old_hotkey = setting(&conn, &setting_key, "").unwrap_or_default();
+
+        let shortcut_manager = app.global_shortcut();
+
+        if !old_hotkey.is_empty() {
+            if let Ok(old_shortcut) = old_hotkey
+                .to_lowercase()
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            {
+                let _ = shortcut_manager.unregister(old_shortcut);
+            }
+        }
+
+        if let Some(ref hotkey) = new_hotkey {
+            if !hotkey.is_empty() {
+                let new_shortcut = hotkey
+                    .to_lowercase()
+                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    .map_err(|e| format!("解析快捷键失败，格式可能不正确: {}", e))?;
+
+                let _ = shortcut_manager.register(new_shortcut);
+            }
+        }
+
+        if let Some(ref hotkey) = new_hotkey {
+            if !hotkey.is_empty() {
+                set_setting_value(&conn, &setting_key, hotkey)?;
+            } else {
+                conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                    .map_err(|e| e.to_string())?;
+            }
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                .map_err(|e| e.to_string())?;
+        }
+
+        let _ = app.emit("orbit://refresh-resources", ());
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let setting_key = format!("hotkey_subtag:{}", subtag_path);
+        if let Some(ref hotkey) = new_hotkey {
+            if !hotkey.is_empty() {
+                set_setting_value(&conn, &setting_key, hotkey)?;
+            } else {
+                conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                    .map_err(|e| e.to_string())?;
+            }
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = app.emit("orbit://refresh-resources", ());
         Ok(())
     }
 }
@@ -6448,95 +6553,98 @@ fn ensure_local_templates() -> Result<(), String> {
             .map_err(|error| format!("Failed to write hello plugin README: {error}"))?;
     }
 
-    let tips_plugin_root = plugins_dir()?.join("tips-search");
-    if !tips_plugin_root.exists() {
-        fs::create_dir_all(&tips_plugin_root)
-            .map_err(|error| format!("Failed to create tips plugin: {error}"))?;
+    #[cfg(not(feature = "lite"))]
+    {
+        let tips_plugin_root = plugins_dir()?.join("tips-search");
+        if !tips_plugin_root.exists() {
+            fs::create_dir_all(&tips_plugin_root)
+                .map_err(|error| format!("Failed to create tips plugin: {error}"))?;
+            fs::write(
+                tips_plugin_root.join("plugin.json"),
+                tips_plugin_manifest(),
+            )
+            .map_err(|error| format!("Failed to write tips plugin manifest: {error}"))?;
+            fs::write(tips_plugin_root.join("main.ts"), tips_plugin_source())
+                .map_err(|error| format!("Failed to write tips plugin source: {error}"))?;
+            fs::write(
+                tips_plugin_root.join("orbitstart-plugin-api.d.ts"),
+                hello_plugin_api_types(),
+            )
+            .map_err(|error| format!("Failed to write tips plugin API types: {error}"))?;
+            fs::write(tips_plugin_root.join("README.md"), tips_plugin_readme())
+                .map_err(|error| format!("Failed to write tips plugin README: {error}"))?;
+        }
+
+        let obsidian_plugin_root = plugins_dir()?.join("obsidian-search");
+        if !obsidian_plugin_root.exists() {
+            fs::create_dir_all(&obsidian_plugin_root)
+                .map_err(|error| format!("Failed to create obsidian plugin: {error}"))?;
+            fs::write(
+                obsidian_plugin_root.join("plugin.json"),
+                obsidian_plugin_manifest(),
+            )
+            .map_err(|error| format!("Failed to write obsidian plugin manifest: {error}"))?;
+            fs::write(
+                obsidian_plugin_root.join("main.ts"),
+                obsidian_plugin_source(),
+            )
+            .map_err(|error| format!("Failed to write obsidian plugin source: {error}"))?;
+            fs::write(
+                obsidian_plugin_root.join("orbitstart-plugin-api.d.ts"),
+                obsidian_plugin_api_types(),
+            )
+            .map_err(|error| format!("Failed to write obsidian plugin API types: {error}"))?;
+            fs::write(
+                obsidian_plugin_root.join("README.md"),
+                obsidian_plugin_readme(),
+            )
+            .map_err(|error| format!("Failed to write obsidian plugin README: {error}"))?;
+        }
+
+        let hotkey_plugin_root = plugins_dir()?.join("hotkey-binder");
+        if !hotkey_plugin_root.exists() {
+            fs::create_dir_all(&hotkey_plugin_root)
+                .map_err(|error| format!("Failed to create hotkey plugin: {error}"))?;
+            fs::write(
+                hotkey_plugin_root.join("plugin.json"),
+                hotkey_binder_manifest(),
+            )
+            .map_err(|error| format!("Failed to write hotkey plugin manifest: {error}"))?;
+            fs::write(hotkey_plugin_root.join("main.ts"), hotkey_binder_source())
+                .map_err(|error| format!("Failed to write hotkey plugin source: {error}"))?;
+            fs::write(
+                hotkey_plugin_root.join("orbitstart-plugin-api.d.ts"),
+                hello_plugin_api_types(),
+            )
+            .map_err(|error| format!("Failed to write hotkey plugin API types: {error}"))?;
+            fs::write(hotkey_plugin_root.join("README.md"), hotkey_binder_readme())
+                .map_err(|error| format!("Failed to write hotkey plugin README: {error}"))?;
+        }
+
+        let workspaces_plugin_root = plugins_dir()?.join("workspaces");
+        fs::create_dir_all(&workspaces_plugin_root)
+            .map_err(|error| format!("Failed to create workspaces plugin: {error}"))?;
         fs::write(
-            tips_plugin_root.join("plugin.json"),
-            tips_plugin_manifest(),
+            workspaces_plugin_root.join("plugin.json"),
+            workspaces_plugin_manifest(),
         )
-        .map_err(|error| format!("Failed to write tips plugin manifest: {error}"))?;
-        fs::write(tips_plugin_root.join("main.ts"), tips_plugin_source())
-            .map_err(|error| format!("Failed to write tips plugin source: {error}"))?;
+        .map_err(|error| format!("Failed to write workspaces plugin manifest: {error}"))?;
         fs::write(
-            tips_plugin_root.join("orbitstart-plugin-api.d.ts"),
+            workspaces_plugin_root.join("main.ts"),
+            workspaces_plugin_source(),
+        )
+        .map_err(|error| format!("Failed to write workspaces plugin source: {error}"))?;
+        fs::write(
+            workspaces_plugin_root.join("orbitstart-plugin-api.d.ts"),
             hello_plugin_api_types(),
         )
-        .map_err(|error| format!("Failed to write tips plugin API types: {error}"))?;
-        fs::write(tips_plugin_root.join("README.md"), tips_plugin_readme())
-            .map_err(|error| format!("Failed to write tips plugin README: {error}"))?;
+        .map_err(|error| format!("Failed to write workspaces plugin API types: {error}"))?;
+        fs::write(
+            workspaces_plugin_root.join("README.md"),
+            workspaces_plugin_readme(),
+        )
+        .map_err(|error| format!("Failed to write workspaces plugin README: {error}"))?;
     }
-
-    let obsidian_plugin_root = plugins_dir()?.join("obsidian-search");
-    if !obsidian_plugin_root.exists() {
-        fs::create_dir_all(&obsidian_plugin_root)
-            .map_err(|error| format!("Failed to create obsidian plugin: {error}"))?;
-        fs::write(
-            obsidian_plugin_root.join("plugin.json"),
-            obsidian_plugin_manifest(),
-        )
-        .map_err(|error| format!("Failed to write obsidian plugin manifest: {error}"))?;
-        fs::write(
-            obsidian_plugin_root.join("main.ts"),
-            obsidian_plugin_source(),
-        )
-        .map_err(|error| format!("Failed to write obsidian plugin source: {error}"))?;
-        fs::write(
-            obsidian_plugin_root.join("orbitstart-plugin-api.d.ts"),
-            obsidian_plugin_api_types(),
-        )
-        .map_err(|error| format!("Failed to write obsidian plugin API types: {error}"))?;
-        fs::write(
-            obsidian_plugin_root.join("README.md"),
-            obsidian_plugin_readme(),
-        )
-        .map_err(|error| format!("Failed to write obsidian plugin README: {error}"))?;
-    }
-
-    let hotkey_plugin_root = plugins_dir()?.join("hotkey-binder");
-    if !hotkey_plugin_root.exists() {
-        fs::create_dir_all(&hotkey_plugin_root)
-            .map_err(|error| format!("Failed to create hotkey plugin: {error}"))?;
-        fs::write(
-            hotkey_plugin_root.join("plugin.json"),
-            hotkey_binder_manifest(),
-        )
-        .map_err(|error| format!("Failed to write hotkey plugin manifest: {error}"))?;
-        fs::write(hotkey_plugin_root.join("main.ts"), hotkey_binder_source())
-            .map_err(|error| format!("Failed to write hotkey plugin source: {error}"))?;
-        fs::write(
-            hotkey_plugin_root.join("orbitstart-plugin-api.d.ts"),
-            hello_plugin_api_types(),
-        )
-        .map_err(|error| format!("Failed to write hotkey plugin API types: {error}"))?;
-        fs::write(hotkey_plugin_root.join("README.md"), hotkey_binder_readme())
-            .map_err(|error| format!("Failed to write hotkey plugin README: {error}"))?;
-    }
-
-    let workspaces_plugin_root = plugins_dir()?.join("workspaces");
-    fs::create_dir_all(&workspaces_plugin_root)
-        .map_err(|error| format!("Failed to create workspaces plugin: {error}"))?;
-    fs::write(
-        workspaces_plugin_root.join("plugin.json"),
-        workspaces_plugin_manifest(),
-    )
-    .map_err(|error| format!("Failed to write workspaces plugin manifest: {error}"))?;
-    fs::write(
-        workspaces_plugin_root.join("main.ts"),
-        workspaces_plugin_source(),
-    )
-    .map_err(|error| format!("Failed to write workspaces plugin source: {error}"))?;
-    fs::write(
-        workspaces_plugin_root.join("orbitstart-plugin-api.d.ts"),
-        hello_plugin_api_types(),
-    )
-    .map_err(|error| format!("Failed to write workspaces plugin API types: {error}"))?;
-    fs::write(
-        workspaces_plugin_root.join("README.md"),
-        workspaces_plugin_readme(),
-    )
-    .map_err(|error| format!("Failed to write workspaces plugin README: {error}"))?;
 
     let theme_root = themes_dir()?.join("aurora-focus");
     if !theme_root.exists() {
@@ -7884,6 +7992,24 @@ fn show_navigate_to_group(app: &tauri::AppHandle, group_id: &str) {
 }
 
 #[cfg(desktop)]
+fn show_navigate_to_subtag(app: &tauri::AppHandle, subtag_path: &str) {
+    hide_bubble_window(app);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        let _ = window.emit("orbit://focus-subtag", subtag_path);
+    }
+}
+
+#[cfg(desktop)]
+fn normalize_hotkey(hotkey: &str) -> String {
+    hotkey
+        .to_lowercase()
+        .replace("win", "super")
+}
+
+#[cfg(desktop)]
 fn handle_global_shortcut_press(
     app: &tauri::AppHandle,
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
@@ -7892,8 +8018,7 @@ fn handle_global_shortcut_press(
         .and_then(|conn| setting(&conn, "global_hotkey", "Ctrl+Alt+Space"))
         .unwrap_or_else(|_| "Ctrl+Alt+Space".to_string());
 
-    let main_shortcut = main_hotkey_str
-        .to_lowercase()
+    let main_shortcut = normalize_hotkey(&main_hotkey_str)
         .parse::<tauri_plugin_global_shortcut::Shortcut>();
 
     if let Ok(main_sh) = main_shortcut {
@@ -7907,8 +8032,7 @@ fn handle_global_shortcut_press(
         if let Ok(custom_hotkeys) = get_custom_hotkeys(&conn) {
             for (group_id, hotkey_str) in custom_hotkeys {
                 if !hotkey_str.is_empty() {
-                    if let Ok(sh) = hotkey_str
-                        .to_lowercase()
+                    if let Ok(sh) = normalize_hotkey(&hotkey_str)
                         .parse::<tauri_plugin_global_shortcut::Shortcut>()
                     {
                         if shortcut == &sh {
@@ -7930,8 +8054,7 @@ fn handle_global_shortcut_press(
                 for row in rows {
                     if let Ok((key, value)) = row {
                         if !value.is_empty() {
-                            if let Ok(sh) = value
-                                .to_lowercase()
+                            if let Ok(sh) = normalize_hotkey(&value)
                                 .parse::<tauri_plugin_global_shortcut::Shortcut>()
                             {
                                 if shortcut == &sh {
@@ -7942,6 +8065,34 @@ fn handle_global_shortcut_press(
                                             "orbit://run-workspace",
                                             workspace_id.to_string(),
                                         );
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 动态检查子目录绑定快捷键并触发运行
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_subtag:%'")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
+                for row in rows {
+                    if let Ok((key, value)) = row {
+                        if !value.is_empty() {
+                            if let Ok(sh) = normalize_hotkey(&value)
+                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                            {
+                                if shortcut == &sh {
+                                    if let Some(subtag_path) =
+                                        key.strip_prefix("hotkey_subtag:")
+                                    {
+                                        show_navigate_to_subtag(app, subtag_path);
                                         return;
                                     }
                                 }
@@ -7975,7 +8126,7 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
         eprintln!("Failed to register global shortcut plugin: {e}");
     } else {
         // 动态注册从数据库读取的快捷键
-        if let Ok(shortcut) = hotkey_str.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+        if let Ok(shortcut) = normalize_hotkey(&hotkey_str).parse::<tauri_plugin_global_shortcut::Shortcut>() {
             if let Err(e) = app.global_shortcut().register(shortcut) {
                 eprintln!(
                     "Failed to register initial global shortcut '{}': {}",
@@ -7989,8 +8140,7 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
             if let Ok(custom_hotkeys) = get_custom_hotkeys(&conn) {
                 for (group_id, hotkey_str) in custom_hotkeys {
                     if !hotkey_str.is_empty() {
-                        if let Ok(sh) = hotkey_str
-                            .to_lowercase()
+                        if let Ok(sh) = normalize_hotkey(&hotkey_str)
                             .parse::<tauri_plugin_global_shortcut::Shortcut>()
                         {
                             if let Err(e) = app.global_shortcut().register(sh) {
@@ -8014,13 +8164,38 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
                     for row in rows {
                         if let Ok((key, value)) = row {
                             if !value.is_empty() {
-                                if let Ok(sh) = value
-                                    .to_lowercase()
+                                if let Ok(sh) = normalize_hotkey(&value)
                                     .parse::<tauri_plugin_global_shortcut::Shortcut>()
                                 {
                                     if let Err(e) = app.global_shortcut().register(sh) {
                                         eprintln!(
                                             "Failed to register workspace shortcut '{}' for workspace '{}': {}",
+                                            value, key, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 动态注册从数据库读取的子目录绑定快捷键
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_subtag:%'")
+            {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    for row in rows {
+                        if let Ok((key, value)) = row {
+                            if !value.is_empty() {
+                                if let Ok(sh) = normalize_hotkey(&value)
+                                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                                {
+                                    if let Err(e) = app.global_shortcut().register(sh) {
+                                        eprintln!(
+                                            "Failed to register subtag shortcut '{}' for subtag '{}': {}",
                                             value, key, e
                                         );
                                     }
@@ -8606,6 +8781,8 @@ pub fn run() {
             reorder_groups,
             get_group_hotkeys,
             update_group_hotkey,
+            get_subtag_hotkeys,
+            update_subtag_hotkey,
             create_items_from_paths,
             pick_resource_input,
             pick_icon_image,

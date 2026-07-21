@@ -13,6 +13,7 @@ interface DesktopShellOptions {
   refreshResources: () => void | Promise<void>;
   toggleSafeMode: () => void | Promise<void>;
   focusGroup: (groupId: string) => void;
+  focusSubtag: (subtagPath: string) => void;
 }
 
 function installDragGuard() {
@@ -50,6 +51,9 @@ function installTauriEventBridge(options: DesktopShellOptions) {
       }));
       disposers.push(await listen("orbit://focus-group", (event) => {
         options.focusGroup(event.payload as string);
+      }));
+      disposers.push(await listen("orbit://focus-subtag", (event) => {
+        options.focusSubtag(event.payload as string);
       }));
     } catch {
       // Browser preview does not provide Tauri's event bridge.

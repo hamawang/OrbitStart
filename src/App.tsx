@@ -187,6 +187,8 @@ import {
   reorderGroups,
   getGroupHotkeys,
   updateGroupHotkey,
+  getSubTagHotkeys,
+  updateSubTagHotkey,
   launchTarget,
   setBubbleSetting
 } from "./lib/native";
@@ -316,7 +318,11 @@ type AppDialogState =
   | { type: "group-hotkey"; groupId: string; value: string }
   | { type: "app-update"; version: string; body: string; pendingUpdate: any }
   | { type: "reset-confirm" }
-  | { type: "create-subtag"; value: string; itemIds: string[] };
+  | { type: "create-subtag"; value: string; itemIds: string[] }
+  | { type: "subtag-rename"; oldPath: string; value: string }
+  | { type: "subtag-hotkey"; subtagPath: string; value: string }
+  | { type: "subtag-delete-confirm"; subtagPath: string }
+  | { type: "batch-remove-tag"; tagId: string };
 
 function getInitialView(): ViewId {
   if (typeof window === "undefined") return "dashboard";
@@ -934,6 +940,7 @@ function DroppableSubTagSection({ path, children }: { path: string; children: Re
   return (
     <div
       ref={setNodeRef}
+      id={`droppable-subtag-wrapper-${path}`}
       className={`subtag-droppable-wrapper ${isOver ? "drag-over" : ""}`}
       style={{ position: "relative" }}
     >
@@ -955,6 +962,8 @@ interface SortableSubTagSectionProps {
   renderResourceCards: (items: OrbitItem[]) => React.ReactNode;
   renderSubTagResourceSection: (node: SubTagNode, depth: number) => React.ReactNode;
   toggleSubTagCollapsed: (path: string) => void;
+  hotkeysBoundToSubTag: Record<string, string>;
+  hotkeyBinderEnabled: boolean;
 }
 
 function SortableSubTagSection({
@@ -965,6 +974,8 @@ function SortableSubTagSection({
   renderResourceCards,
   renderSubTagResourceSection,
   toggleSubTagCollapsed,
+  hotkeysBoundToSubTag,
+  hotkeyBinderEnabled,
 }: SortableSubTagSectionProps) {
   const {
     attributes,
@@ -993,7 +1004,7 @@ function SortableSubTagSection({
           className="subtag-resource-section"
           style={{ "--subtag-depth": depth } as CSSProperties}
         >
-          <header className="subtag-resource-head">
+          <header className="subtag-resource-head" data-folder-id={node.path}>
             <div
               className="subtag-drag-handle"
               {...attributes}
@@ -1020,6 +1031,11 @@ function SortableSubTagSection({
             <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
               <strong>{node.name}</strong>
               <span>{total} 个资源</span>
+              {hotkeyBinderEnabled && hotkeysBoundToSubTag[node.path] && (
+                <span className="subtag-hotkey-badge" onPointerDown={(e) => e.stopPropagation()}>
+                  {hotkeysBoundToSubTag[node.path]}
+                </span>
+              )}
             </div>
           </header>
 
@@ -1530,6 +1546,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }, [activeGroup]);
 
   const [hotkeysBoundToGroup, setHotkeysBoundToGroup] = useState<Record<string, string>>({});
+  const [hotkeysBoundToSubTag, setHotkeysBoundToSubTag] = useState<Record<string, string>>({});
   const [groupDragActiveId, setGroupDragActiveId] = useState<string | null>(null);
 
   const pluginStateReady = plugins.length > 0;
@@ -1545,11 +1562,22 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   };
 
+  const fetchSubTagHotkeys = async () => {
+    try {
+      const keys = await getSubTagHotkeys();
+      setHotkeysBoundToSubTag(keys);
+    } catch (e) {
+      console.error("Failed to load subtag hotkeys", e);
+    }
+  };
+
   useEffect(() => {
     if (hotkeyBinderEnabled) {
       void fetchGroupHotkeys();
+      void fetchSubTagHotkeys();
     } else {
       setHotkeysBoundToGroup({});
+      setHotkeysBoundToSubTag({});
     }
   }, [hotkeyBinderEnabled]);
 
@@ -1663,6 +1691,80 @@ export function MainApp({ windowLabel }: MainAppProps) {
       }
     }
   };
+  const handleSubTagHotkeyKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setDialog(null);
+      return;
+    }
+
+    if (event.key === "Backspace") {
+      if (dialog?.type === "subtag-hotkey") {
+        setBusy(true);
+        void updateSubTagHotkey(dialog.subtagPath, null).then(async () => {
+          setToast(`子目录「${dialog.subtagPath}」已解除快捷键绑定`);
+          setDialog(null);
+          await fetchSubTagHotkeys();
+        }).catch((error) => {
+          setToast(`解除绑定失败：${String(error)}`);
+        }).finally(() => {
+          setBusy(false);
+        });
+      }
+      return;
+    }
+
+    const key = event.key;
+    const isModifier = ["Control", "Alt", "Shift", "Meta", "OS"].includes(key);
+
+    const keys: string[] = [];
+    if (event.ctrlKey) keys.push("Ctrl");
+    if (event.altKey) keys.push("Alt");
+    if (event.shiftKey) keys.push("Shift");
+    if (event.metaKey) keys.push("Win");
+
+    if (!isModifier) {
+      let keyName = key;
+      if (keyName === " ") keyName = "Space";
+      if (keyName.length === 1) {
+        keyName = keyName.toUpperCase();
+      } else {
+        keyName = keyName.charAt(0).toUpperCase() + keyName.slice(1);
+      }
+      if (!keys.includes(keyName)) {
+        keys.push(keyName);
+      }
+    }
+
+    const combination = keys.slice(0, 4).join("+");
+    setDialog((prev) => prev?.type === "subtag-hotkey" ? { ...prev, value: combination } : prev);
+  };
+
+  const handleSubTagHotkeyKeyUp = async (event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (dialog?.type === "subtag-hotkey" && dialog.value) {
+      const parts = dialog.value.split("+");
+      const hasMainKey = parts.length > 0 && !["Ctrl", "Alt", "Shift", "Win"].includes(parts[parts.length - 1]);
+
+      if (hasMainKey) {
+        setBusy(true);
+        try {
+          await updateSubTagHotkey(dialog.subtagPath, dialog.value);
+          setToast(`子目录「${dialog.subtagPath}」已绑定快捷键：${dialog.value}`);
+          setDialog(null);
+          await fetchSubTagHotkeys();
+        } catch (error) {
+          setToast(`绑定失败：${String(error)}`);
+        } finally {
+          setBusy(false);
+        }
+      }
+    }
+  };
 
   const checkForUpdates = async (manual: boolean) => {
     if (!isTauriRuntime()) {
@@ -1731,9 +1833,10 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   };
 
-  const tripsFeatureEnabled = !pluginStateReady || pluginEnabled("tips-search");
-  const obsidianFeatureEnabled = !pluginStateReady || (pluginEnabled("core-obsidian") && pluginEnabled("obsidian-search"));
-  const workspacesFeatureEnabled = !pluginStateReady || pluginEnabled("workspaces");
+  const isLite = import.meta.env.VITE_APP_LITE === "true";
+  const tripsFeatureEnabled = !isLite && (!pluginStateReady || pluginEnabled("tips-search"));
+  const obsidianFeatureEnabled = !isLite && (!pluginStateReady || (pluginEnabled("core-obsidian") && pluginEnabled("obsidian-search")));
+  const workspacesFeatureEnabled = !isLite && (!pluginStateReady || pluginEnabled("workspaces"));
   const effectivePlugins = useMemo(
     () => plugins.map((plugin) => {
       if (plugin.id === "obsidian-search" && !obsidianFeatureEnabled) {
@@ -2242,6 +2345,35 @@ export function MainApp({ windowLabel }: MainAppProps) {
     };
   }, [isTodoPanelWindow, isAuxWindow, isBubbleWindow]);
 
+  useEffect(() => {
+    if (isTodoPanelWindow || isAuxWindow || isBubbleWindow || !isTauriRuntime()) return;
+    
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<string>("orbit://run-workspace", (event) => {
+        const wsId = event.payload;
+        if (wsId) {
+          void launchWorkspaceFromDashboard(wsId);
+        }
+      }))
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((err) => console.error("Failed to setup global workspace run listener", err));
+      
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isTodoPanelWindow, isAuxWindow, isBubbleWindow, pluginHost]);
+
+
   function focusSearch() {
     setActiveView("dashboard");
     requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -2284,7 +2416,33 @@ export function MainApp({ windowLabel }: MainAppProps) {
         await reload();
       },
       toggleSafeMode,
-      focusGroup: (groupId) => setActiveGroup(groupId)
+      focusGroup: (groupId) => setActiveGroup(groupId),
+      focusSubtag: (subtagPath) => {
+        setActiveView("dashboard");
+        setActiveGroup("all");
+        setQuery("");
+
+        const parts = subtagPath.split("/");
+        const pathsToExpand: string[] = [];
+        for (let i = 1; i <= parts.length; i++) {
+          pathsToExpand.push(parts.slice(0, i).join("/"));
+        }
+
+        setCollapsedSubTagPaths((prev) =>
+          prev.filter((p) => !pathsToExpand.includes(p))
+        );
+
+        setTimeout(() => {
+          const el = document.getElementById(`droppable-subtag-wrapper-${subtagPath}`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.classList.add("focus-highlight");
+            setTimeout(() => {
+              el.classList.remove("focus-highlight");
+            }, 2000);
+          }
+        }, 100);
+      }
     });
   }, [settings?.safeMode]);
 
@@ -2946,6 +3104,92 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  async function confirmRenameSubTag(oldPath: string, newPath: string) {
+    const cleanPath = cleanSubTag(newPath);
+    if (!cleanPath) {
+      setToast("新子目录名称不能为空");
+      return;
+    }
+    if (cleanPath === oldPath) {
+      setDialog(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      const targetItems = items.filter(
+        (item) => item.subTag && (item.subTag === oldPath || item.subTag.startsWith(oldPath + "/"))
+      );
+      const promises = targetItems.map((item) => {
+        let updatedSubTag = cleanPath;
+        if (item.subTag && item.subTag.startsWith(oldPath + "/")) {
+          updatedSubTag = cleanPath + item.subTag.substring(oldPath.length);
+        }
+        return updateItem({ ...item, subTag: updatedSubTag });
+      });
+      await Promise.all(promises);
+
+      // Rename subtag hotkeys if any are bound
+      const hotkeyPromises: Promise<void>[] = [];
+      Object.entries(hotkeysBoundToSubTag).forEach(([subPath, hotkey]) => {
+        if (subPath === oldPath || subPath.startsWith(oldPath + "/")) {
+          let newSubPath = cleanPath;
+          if (subPath.startsWith(oldPath + "/")) {
+            newSubPath = cleanPath + subPath.substring(oldPath.length);
+          }
+          hotkeyPromises.push(updateSubTagHotkey(subPath, null));
+          hotkeyPromises.push(updateSubTagHotkey(newSubPath, hotkey));
+        }
+      });
+      if (hotkeyPromises.length > 0) {
+        await Promise.all(hotkeyPromises);
+        await fetchSubTagHotkeys();
+      }
+
+      await reload();
+      setToast(`成功重命名子目录并联动更新了 ${targetItems.length} 个资源项`);
+      setDialog(null);
+    } catch (error) {
+      console.error("Failed to rename subtag", error);
+      setToast("重命名子目录失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDeleteSubTag(path: string) {
+    setBusy(true);
+    try {
+      const targetItems = items.filter(
+        (item) => item.subTag && (item.subTag === path || item.subTag.startsWith(path + "/"))
+      );
+      const promises = targetItems.map((item) => {
+        return updateItem({ ...item, subTag: "" });
+      });
+      await Promise.all(promises);
+
+      // Delete subtag hotkeys if any are bound
+      const hotkeyPromises: Promise<void>[] = [];
+      Object.entries(hotkeysBoundToSubTag).forEach(([subPath, _]) => {
+        if (subPath === path || subPath.startsWith(path + "/")) {
+          hotkeyPromises.push(updateSubTagHotkey(subPath, null));
+        }
+      });
+      if (hotkeyPromises.length > 0) {
+        await Promise.all(hotkeyPromises);
+        await fetchSubTagHotkeys();
+      }
+
+      await reload();
+      setToast(`成功删除子目录并移除了其下 ${targetItems.length} 个资源项的子目录标记`);
+      setDialog(null);
+    } catch (error) {
+      console.error("Failed to delete subtag", error);
+      setToast("删除子目录失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleFavorite(item: OrbitItem) {
     setBusy(true);
     try {
@@ -3097,6 +3341,38 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  async function batchRemoveTagSelected() {
+    if (selectedIds.length === 0) return;
+    const selected = items.filter((item) => selectedIds.includes(item.id));
+    const selectedItemGroups = Array.from(new Set(selected.flatMap((item) => splitGroupIds(item.group)))).filter(Boolean);
+    const initialTagId = selectedItemGroups[0] ?? "";
+    setDialog({ type: "batch-remove-tag", tagId: initialTagId });
+  }
+
+  async function confirmBatchRemoveTag(tagId: string) {
+    if (selectedIds.length === 0) return;
+    setBusy(true);
+    try {
+      const selected = items.filter((item) => selectedIds.includes(item.id));
+      for (const item of selected) {
+        const currentGroups = splitGroupIds(item.group);
+        if (currentGroups.includes(tagId)) {
+          const updatedGroups = currentGroups.filter((id) => id !== tagId);
+          await updateItem({ ...item, group: joinGroupIds(updatedGroups) });
+        }
+      }
+      exitBatchMode();
+      setDialog(null);
+      await reload();
+      const group = groups.find((candidate) => candidate.id === tagId);
+      setToast(`已批量移除标签：${group?.title ?? tagId}`);
+    } catch (error) {
+      setToast(`批量移除标签失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function confirmBatchMoveToSubTag(subTag: string) {
     if (selectedIds.length === 0) return;
     setBusy(true);
@@ -3162,6 +3438,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
         renderResourceCards={renderResourceCards}
         renderSubTagResourceSection={renderSubTagResourceSection}
         toggleSubTagCollapsed={toggleSubTagCollapsed}
+        hotkeysBoundToSubTag={hotkeysBoundToSubTag}
+        hotkeyBinderEnabled={hotkeyBinderEnabled}
       />
     );
   }
@@ -4260,6 +4538,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button type="button" onClick={createWorkspaceFromActiveGroup} disabled={busy || selectedIds.length === 0}>创建为工作区</button>
               )}
               <button type="button" onClick={batchMoveSelected} disabled={busy || selectedIds.length === 0}>加标签</button>
+              <button type="button" onClick={batchRemoveTagSelected} disabled={busy || selectedIds.length === 0}>批量移除标签</button>
               <button
                 type="button"
                 onClick={() => {
@@ -5272,7 +5551,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.7.9</strong>版本</span>
+          <span><strong>0.8.0</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -5597,6 +5876,64 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
+    if (dialog.type === "batch-remove-tag") {
+      const selected = items.filter((item) => selectedIds.includes(item.id));
+      const selectedItemGroups = Array.from(new Set(selected.flatMap((item) => splitGroupIds(item.group)))).filter(Boolean);
+      const tagsToRemove = selectedItemGroups.map(id => {
+        const groupObj = groups.find(g => g.id === id);
+        return { id, title: groupObj ? groupObj.title : id };
+      });
+
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Batch remove tag</p>
+                <h2>批量移除标签</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p>已选择 {selectedIds.length} 个资源。选择标签后会从已选资源中移除该标签。</p>
+              {tagsToRemove.length === 0 ? (
+                <p style={{ color: "var(--red)" }}>已选择的资源中没有包含任何标签。</p>
+              ) : (
+                <label>
+                  要移除的标签
+                  <select
+                    value={dialog.tagId}
+                    onChange={(event) =>
+                      setDialog((current) => (current?.type === "batch-remove-tag" ? { ...current, tagId: event.target.value } : current))
+                    }
+                  >
+                    {tagsToRemove.map((tag) => (
+                      <option key={tag.id} value={tag.id}>
+                        {tag.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button
+                type="button"
+                className="danger-action dialog-action"
+                onClick={() => void confirmBatchRemoveTag(dialog.tagId)}
+                disabled={busy || selectedIds.length === 0 || tagsToRemove.length === 0 || !dialog.tagId}
+              >
+                移除标签
+              </button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     if (dialog.type === "template") {
       return (
         <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
@@ -5736,6 +6073,118 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
+    if (dialog.type === "subtag-hotkey") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Hotkey Binder</p>
+                <h2>录制子目录快捷键</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p style={{ fontSize: "var(--font-size-sm)", color: "var(--soft)", marginBottom: "var(--space-4)" }}>
+                请按下你想为子目录 <strong>{dialog.subtagPath}</strong> 绑定的全局快捷键（如 <code>Ctrl+Shift+1</code>）。录制完成后窗口将自动关闭。
+              </p>
+              <label>
+                按键录制中...
+                <input
+                  autoFocus
+                  readOnly
+                  placeholder="按下按键组合进行录制..."
+                  value={dialog.value || "请按下按键..."}
+                  onKeyDown={handleSubTagHotkeyKeyDown}
+                  onKeyUp={handleSubTagHotkeyKeyUp}
+                  className="recording"
+                  style={{ caretColor: "transparent", cursor: "pointer", textAlign: "center", fontSize: "16px", fontWeight: "bold" }}
+                />
+              </label>
+              <p style={{ fontSize: "var(--font-size-xs)", color: "var(--soft)", marginTop: "var(--space-2)" }}>
+                支持 Ctrl, Alt, Shift, Win + 任意单键。按 <code>Backspace</code> 清除当前绑定，按 <code>Escape</code> 退出。
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (dialog.type === "subtag-rename") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <form
+            className="modal-panel dialog-panel"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmRenameSubTag(dialog.oldPath, dialog.value);
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Rename subtag</p>
+                <h2>重命名子目录</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <label>
+                子目录路径名称
+                <input
+                  autoFocus
+                  value={dialog.value}
+                  onChange={(event) =>
+                    setDialog((current) => (current?.type === "subtag-rename" ? { ...current, value: event.target.value } : current))
+                  }
+                  placeholder="例如：开发工具 或 办公/文档"
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button type="submit" className="primary-action" disabled={busy}>确定</button>
+            </div>
+          </form>
+        </section>
+      );
+    }
+
+    if (dialog.type === "subtag-delete-confirm") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow" style={{ color: "var(--danger)" }}>Delete subtag</p>
+                <h2>删除子目录</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p className="dialog-warning" style={{ margin: 0, padding: "var(--space-3) var(--space-4)", background: "rgba(255, 122, 144, 0.08)", border: "1px solid rgba(255, 122, 144, 0.2)", borderRadius: "8px", color: "var(--danger)", fontSize: "13px", lineHeight: "1.6" }}>
+                确定要删除子目录 <strong>{dialog.subtagPath}</strong> 吗？这只会清除其下所有资源的子目录标记，并解绑关联快捷键，不会删除资源本身或本地文件。
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button type="button" className="danger-action dialog-action" onClick={() => { void confirmDeleteSubTag(dialog.subtagPath); }} disabled={busy}>
+                确定删除
+              </button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     return null;
   };
 
@@ -5846,6 +6295,70 @@ export function MainApp({ windowLabel }: MainAppProps) {
               ) : (
                 <button type="button" disabled>{"内置标签不可删除"}</button>
               )}
+            </>
+          );
+        })()}
+
+        {contextMenu.kind === "folder" && contextMenu.folderId && (() => {
+          const subtagPath = contextMenu.folderId;
+          const hotkey = hotkeysBoundToSubTag[subtagPath];
+          return (
+            <>
+              {hotkeyBinderEnabled && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDialog({ type: "subtag-hotkey", subtagPath, value: hotkey || "" });
+                      setContextMenu(null);
+                    }}
+                  >
+                    {hotkey ? "修改当前快捷键" : "绑定全局快捷键"}
+                  </button>
+                  {hotkey && (
+                    <button
+                      type="button"
+                      className="context-danger"
+                      onClick={async () => {
+                        setContextMenu(null);
+                        setBusy(true);
+                        try {
+                          await updateSubTagHotkey(subtagPath, null);
+                          setToast(`子目录「${subtagPath}」已解除快捷键绑定`);
+                          await fetchSubTagHotkeys();
+                        } catch (error) {
+                          setToast(`解除绑定失败：${String(error)}`);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      {"删除全局快捷键"}
+                    </button>
+                  )}
+                  <span className="context-separator" />
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDialog({ type: "subtag-rename", oldPath: subtagPath, value: subtagPath });
+                  setContextMenu(null);
+                }}
+              >
+                {"重命名子目录"}
+              </button>
+              <button
+                type="button"
+                className="context-danger"
+                onClick={() => {
+                  setDialog({ type: "subtag-delete-confirm", subtagPath });
+                  setContextMenu(null);
+                }}
+              >
+                {"删除子目录"}
+              </button>
             </>
           );
         })()}

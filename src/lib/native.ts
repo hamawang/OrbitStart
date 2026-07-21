@@ -1095,6 +1095,31 @@ export async function updateGroupHotkey(groupId: string, hotkey: string | null):
   }
 }
 
+export async function getSubTagHotkeys(): Promise<Record<string, string>> {
+  try {
+    return await invokeNative<Record<string, string>>("get_subtag_hotkeys");
+  } catch {
+    const raw = window.localStorage.getItem("orbitstart.browser.subtag_hotkeys");
+    return raw ? JSON.parse(raw) : {};
+  }
+}
+
+export async function updateSubTagHotkey(subtagPath: string, hotkey: string | null): Promise<void> {
+  try {
+    await invokeNative<void>("update_subtag_hotkey", { subtagPath, newHotkey: hotkey });
+  } catch {
+    const raw = window.localStorage.getItem("orbitstart.browser.subtag_hotkeys");
+    const map = raw ? JSON.parse(raw) : {};
+    if (hotkey) {
+      map[subtagPath] = hotkey;
+    } else {
+      delete map[subtagPath];
+    }
+    window.localStorage.setItem("orbitstart.browser.subtag_hotkeys", JSON.stringify(map));
+  }
+}
+
+
 export async function setBubbleSetting(key: string, value: string): Promise<Phase0Snapshot> {
   try {
     return await invokeNative<Phase0Snapshot>("set_bubble_setting", { key, value });

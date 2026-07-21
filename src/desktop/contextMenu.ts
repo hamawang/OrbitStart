@@ -1,4 +1,4 @@
-export type ContextMenuKind = "resource" | "blank" | "edit" | "group" | "folder";
+export type ContextMenuKind = "resource" | "blank" | "edit" | "group" | "folder" | "subtag";
 export type EditMenuCommand = "cut" | "copy" | "paste" | "select-all";
 
 export interface ContextMenuState {
@@ -8,6 +8,7 @@ export interface ContextMenuState {
   resourceId?: string;
   groupId?: string;
   folderId?: string;
+  subTagPath?: string;
 }
 
 export function isEditableElement(target: EventTarget | null): target is HTMLElement {

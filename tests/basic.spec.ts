@@ -287,10 +287,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.7.9 on the about page', async ({ page }) => {
+  test('should show version 0.8.0 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.7.9');
+    await expect(page.locator('.about-card')).toContainText('0.8.0');
   });
 
   test('should display and interact with the sub-directory selection modal', async ({ page }) => {
@@ -367,4 +367,90 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     // Cancel edit
     await page.locator('.modal-actions button', { hasText: '取消' }).click();
   });
+
+  test('should display and interact with the batch remove tag dialog', async ({ page }) => {
+    await page.evaluate(() => {
+      window.localStorage.setItem('orbitstart.browser.items', JSON.stringify([
+        {
+          id: 'batch-test-1',
+          title: 'Batch Test 1',
+          subtitle: 'C:\\Test\\1.exe',
+          kind: 'app',
+          group: 'apps,web,scripts',
+          target: 'C:\\Test\\1.exe',
+          aliases: [],
+          tags: ['manual'],
+          subTag: '',
+          icon: 'AppWindow',
+          accent: '#5cc8ff',
+          favorite: false,
+          launchCount: 0
+        },
+        {
+          id: 'batch-test-2',
+          title: 'Batch Test 2',
+          subtitle: 'C:\\Test\\2.exe',
+          kind: 'app',
+          group: 'apps,web',
+          target: 'C:\\Test\\2.exe',
+          aliases: [],
+          tags: ['manual'],
+          subTag: '',
+          icon: 'AppWindow',
+          accent: '#5cc8ff',
+          favorite: false,
+          launchCount: 0
+        }
+      ]));
+    });
+
+    await page.reload();
+    await page.waitForSelector('.app-shell', { timeout: 10000 });
+    await page.locator('[data-group-id="apps"] .group-tab-btn').click();
+
+    // Click "批量管理" to enter batch mode
+    await page.locator('button', { hasText: '批量管理' }).click();
+
+    // Select both resources by clicking on them
+    await page.locator('.resource-row[data-resource-id="batch-test-1"]').click();
+    await page.locator('.resource-row[data-resource-id="batch-test-2"]').click();
+
+    // Verify "已选 2 个" is visible in toolbar
+    await expect(page.locator('.batch-toolbar strong')).toContainText('已选 2 个');
+
+    // Click "批量移除标签" button
+    await page.locator('.batch-toolbar button', { hasText: '批量移除标签' }).click();
+
+    // Verify the dialog "批量移除标签" is visible
+    await expect(page.locator('.dialog-panel h2', { hasText: '批量移除标签' })).toBeVisible();
+
+    // Verify select input options
+    const select = page.locator('.dialog-body select');
+    await expect(select).toBeVisible();
+
+    // Select the option "web"
+    await select.selectOption('web');
+
+    // Click confirm button
+    await page.locator('.modal-actions button', { hasText: '移除标签' }).click();
+
+    // Dialog should close
+    await expect(page.locator('.dialog-panel h2', { hasText: '批量移除标签' })).toHaveCount(0);
+
+    // Verify that 'web' is removed from both resources in localStorage
+    const items = await page.evaluate(() => {
+      return JSON.parse(window.localStorage.getItem('orbitstart.browser.items') ?? '[]');
+    });
+
+    const item1 = items.find((item: { id: string }) => item.id === 'batch-test-1');
+    const item2 = items.find((item: { id: string }) => item.id === 'batch-test-2');
+
+    expect(item1.group.split(',')).not.toContain('web');
+    expect(item1.group.split(',')).toContain('apps');
+    expect(item1.group.split(',')).toContain('scripts');
+
+    expect(item2.group.split(',')).not.toContain('web');
+    expect(item2.group.split(',')).toContain('apps');
+  });
 });
+

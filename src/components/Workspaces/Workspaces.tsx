@@ -122,6 +122,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   const [nodeContextMenu, setNodeContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [copiedStep, setCopiedStep] = useState<Partial<WorkspaceStep> | null>(null);
   const graphViewportRef = useRef<HTMLDivElement | null>(null);
+  const hotkeyInputRef = useRef<HTMLInputElement | null>(null);
   const [expandedStepIds, setExpandedStepIds] = useState<string[]>([]);
   const [editorViewMode, setEditorViewMode] = useState<"card" | "list" | "graph">("graph");
   const [graphPanOffset, setGraphPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -142,6 +143,12 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       window.removeEventListener("click", handleGlobalClick);
     };
   }, []);
+
+  useEffect(() => {
+    if (isRecordingHotkey && hotkeyInputRef.current) {
+      hotkeyInputRef.current.focus();
+    }
+  }, [isRecordingHotkey]);
 
   useEffect(() => {
     const viewport = graphViewportRef.current;
@@ -218,35 +225,6 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       }
     }
   }, [workspaces, steps]);
-
-  // Listen to background shortcut workspace run commands
-  useEffect(() => {
-    let unsubscribe: any;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<string>("orbit://run-workspace", (event) => {
-        const wsId = event.payload;
-        const rawWs = localStorage.getItem(STORAGE_KEY_WORKSPACES);
-        if (rawWs) {
-          try {
-            const list = JSON.parse(rawWs);
-            const found = list.find((w: any) => w.id === wsId);
-            if (found) {
-              handleLaunch(found);
-            }
-          } catch (e) {
-            console.error("Failed to run workspace from shortcut", e);
-          }
-        }
-      }).then((unsub) => {
-        unsubscribe = unsub;
-      });
-    });
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, [workspaces]);
 
   // Save to LocalStorage and reload plugin commands
   const saveAllData = (nextWs: Workspace[], nextSteps: WorkspaceStep[]) => {
@@ -1000,6 +978,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                 <label>全局快捷键</label>
                 <div style={{ display: "flex", gap: "var(--space-2)" }}>
                   <input 
+                    ref={hotkeyInputRef}
                     type="text" 
                     value={isRecordingHotkey ? "请在键盘上按下快捷键..." : (editingWorkspace.hotkey || "未绑定")}
                     readOnly
@@ -1007,7 +986,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                     placeholder="点击右侧按钮绑定快捷键"
                     style={{ 
                       flexGrow: 1, 
-                      color: isRecordingHotkey ? "var(--gold)" : (editingWorkspace.hotkey ? "var(--text)" : "var(--text-muted)"),
+                      color: isRecordingHotkey ? "var(--accent, var(--gold))" : (editingWorkspace.hotkey ? "var(--text)" : "var(--text-muted)"),
                       fontWeight: isRecordingHotkey ? "bold" : "normal",
                       caretColor: "transparent",
                       cursor: "default"
@@ -1908,7 +1887,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                           width: "100vw",
                           height: "100vh",
                           zIndex: 9999,
-                          background: "#080a0f",
+                          background: "var(--bg-deep)",
                           padding: "24px",
                           display: "flex",
                           flexDirection: "column"
@@ -1916,7 +1895,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                           position: "relative",
                           width: "100%",
                           height: "540px",
-                          background: "#080a0f",
+                          background: "var(--bg-deep)",
                           borderRadius: "12px",
                           border: "1px solid var(--line-strong)",
                           overflow: "hidden",
@@ -1953,7 +1932,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                             flexGrow: 1,
                             overflow: "hidden",
                             cursor: isGraphDragging ? "grabbing" : "grab",
-                            background: "radial-gradient(rgba(255,255,255,0.03) 1px, transparent 0)",
+                            background: "radial-gradient(var(--graph-dot, color-mix(in srgb, var(--text) 8%, transparent)) 1px, transparent 0)",
                             backgroundSize: "24px 24px"
                           }}
                         >
@@ -1996,14 +1975,14 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                       <path 
                                         d={pathD}
                                         fill="none"
-                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        stroke={editingWorkspace?.color || "var(--accent, var(--gold))"}
                                         strokeWidth={4}
                                         style={{ opacity: 0.15, filter: "url(#glow-connector)" }}
                                       />
                                       <path 
                                         d={pathD}
                                         fill="none"
-                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        stroke={editingWorkspace?.color || "var(--accent, var(--gold))"}
                                         strokeWidth={1.5}
                                         style={{ opacity: 0.8 }}
                                       />
@@ -2012,8 +1991,8 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         y={fromY - 3} 
                                         width={6} 
                                         height={6} 
-                                        fill="#181e28"
-                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        fill="var(--surface)"
+                                        stroke={editingWorkspace?.color || "var(--accent, var(--gold))"}
                                         strokeWidth={1}
                                         transform={`rotate(45 ${edge.px} ${fromY})`}
                                       />
@@ -2022,8 +2001,8 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         y={toY - 3.5} 
                                         width={7} 
                                         height={7} 
-                                        fill={editingWorkspace?.color || "var(--gold)"}
-                                        stroke="#181e28"
+                                        fill={editingWorkspace?.color || "var(--accent, var(--gold))"}
+                                        stroke="var(--surface)"
                                         strokeWidth={1.2}
                                         transform={`rotate(45 ${edge.cx} ${toY})`}
                                       />
@@ -2056,9 +2035,9 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         width: "180px",
                                         height: "66px",
                                         borderRadius: "10px",
-                                        background: "rgba(24, 30, 40, 0.95)",
-                                        border: "2px solid var(--gold)",
-                                        boxShadow: "0 0 16px rgba(197, 160, 89, 0.35)",
+                                        background: "var(--surface-3, var(--surface))",
+                                        border: "2px solid var(--accent, var(--gold))",
+                                        boxShadow: "var(--shadow-card)",
                                         display: "flex",
                                         flexDirection: "column",
                                         justifyContent: "center",
@@ -2068,11 +2047,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         zIndex: 5
                                       }}
                                     >
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--gold)" }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--accent, var(--gold))" }}>
                                         <Workflow size={14} />
                                         <span style={{ fontWeight: "bold", fontSize: "0.85rem", letterSpacing: "1px" }}>启动工作区</span>
                                       </div>
-                                      <span style={{ fontSize: "0.65rem", color: "var(--gold)", opacity: 0.8 }}>根节点</span>
+                                      <span style={{ fontSize: "0.65rem", color: "var(--accent, var(--gold))", opacity: 0.8 }}>根节点</span>
                                     </div>
                                   );
                                 }
@@ -2089,11 +2068,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                       width: "155px",
                                       height: "62px",
                                       borderRadius: "8px",
-                                      background: "rgba(18, 22, 28, 0.9)",
+                                      background: "var(--surface)",
                                       border: isSelected ? `2px solid ${stepColor}` : "1px solid var(--line-strong)",
                                       boxShadow: isSelected 
                                         ? `0 0 14px ${stepColor}40`
-                                        : "0 4px 10px rgba(0,0,0,0.3)",
+                                        : "var(--shadow-card)",
                                       display: "flex",
                                       alignItems: "center",
                                       padding: "8px",
@@ -2156,7 +2135,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               bottom: "12px",
                               width: "120px",
                               height: "90px",
-                              background: "rgba(18, 22, 28, 0.95)",
+                              background: "var(--surface)",
                               border: "1px solid var(--line-strong)",
                               borderRadius: "8px",
                               overflow: "hidden",
@@ -2216,7 +2195,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               position: "absolute",
                               right: "12px",
                               bottom: "12px",
-                              background: "rgba(18, 22, 28, 0.95)",
+                              background: "var(--surface)",
                               border: "1px solid var(--line-strong)",
                               borderRadius: "8px",
                               display: "flex",
@@ -2279,7 +2258,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               padding: "0 12px",
                               fontSize: "0.75rem",
                               borderRadius: "6px",
-                              background: "rgba(18, 22, 28, 0.95)",
+                              background: "var(--surface)",
                               border: "1px solid var(--line-strong)",
                               color: "var(--text)",
                               cursor: "pointer",
@@ -2302,7 +2281,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 top: "12px",
                                 bottom: "12px",
                                 width: "320px",
-                                background: "rgba(18, 22, 28, 0.95)",
+                                background: "var(--surface)",
                                 border: "1px solid var(--line-strong)",
                                 borderRadius: "8px",
                                 padding: "16px",
@@ -2310,12 +2289,12 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 display: "flex",
                                 flexDirection: "column",
                                 gap: "12px",
-                                boxShadow: "-4px 0 16px rgba(0,0,0,0.5)",
+                                boxShadow: "-4px 0 16px rgba(0,0,0,0.12)",
                                 pointerEvents: "auto"
                               }}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "8px" }}>
-                                <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--gold)" }}>步骤节点配置</span>
+                                <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--accent, var(--gold))" }}>步骤节点配置</span>
                                 <button 
                                   type="button" 
                                   className="icon-button"
@@ -3213,11 +3192,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
             zIndex: 99999,
             padding: "4px",
             minWidth: "130px",
-            background: "rgba(18, 22, 28, 0.9)",
+            background: "var(--surface)",
             backdropFilter: "blur(12px)",
             border: "1px solid var(--line-strong)",
             borderRadius: "var(--radius-md)",
-            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 15px rgba(197, 160, 89, 0.1)",
+            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05)",
             display: "flex",
             flexDirection: "column",
             gap: "2px"
@@ -3316,11 +3295,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
             zIndex: 99999,
             padding: "4px",
             minWidth: "120px",
-            background: "rgba(18, 22, 28, 0.95)",
+            background: "var(--surface)",
             backdropFilter: "blur(12px)",
             border: "1px solid var(--line-strong)",
             borderRadius: "var(--radius-md)",
-            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 15px rgba(197, 160, 89, 0.1)",
+            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05)",
             display: "flex",
             flexDirection: "column",
             gap: "2px"

@@ -1,11 +1,11 @@
 {
-  "version": "0.7.5",
-  "notes": "1. 优化了工作台布局，信息统计图表已整合至右侧工作台并支持在设置中开启或关闭；\n2. 重新编排了工作台展开收起按钮的位置，将其固定在标签栏右侧且不会被遮挡；\n3. 修复了窗口边框双击最大化闪烁与失效缺陷；\n4. 修复了本地资源卡片‘打开所在位置’功能跳转至Documents文档目录的 Bug；\n5. 移除了快捷方式(.lnk)文件的二次解析，支持各类应用快捷方式原生执行。",
-  "pub_date": "2026-07-06T17:58:03.014Z",
+  "version": "0.8.0",
+  "notes": "1. 适配工作区插件图形模式的亮色/暗色主题，支持全自动主题Token适配；\n2. 修复工作区全局快捷键录制不灵敏与全局无法唤醒的 Bug；\n3. 修复了主界面标签页热键角标被遮挡与层级遮罩问题；\n4. 重新打包GUI为0.8.0版本。",
+  "pub_date": "2026-07-18T12:00:00.000Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmFCZmljUjBNMTJ1dFFFNjM0N1g1R1BMTGg5Vm51QUhTSFU3aDd0L3RJUGthTWJhSU5WelF4WUFMLy94em5adHdmZFNsdTJxRlhnNktQbFFacjJ4aXZhb3phRktWWXd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgyMzI3MDc3CWZpbGU6T3JiaXRTdGFydF8wLjYuMF94NjQtc2V0dXAuZXhlCm9RWGhqd0dBblVTV1NRRDhxdXVTck16WE01R05hTU1HNGFuS2FuMmhCbWNPT0RPbUFHaTlVZHA2R01pV3BDcVdydHFGK29VTE9WbU9vS24yLy80MkJnPT0K",
-      "url": "https://github.com/xuxinxi14/OrbitStart/releases/download/v0.7.5/OrbitStart_0.7.5_x64-setup.exe"
+      "url": "https://github.com/xuxinxi14/OrbitStart/releases/download/v0.8.0/OrbitStart_0.8.0_x64-setup.exe"
     }
   }
 }
