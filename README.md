@@ -48,6 +48,9 @@ OrbitStart 的核心目标不是简单地“打开一个程序”，而是帮助
 * 开始学习时，快速进入课件、笔记、题库、翻译工具和课程网页。
 * 开始科研时，打开文献管理器、数据库网站、论文目录和分析脚本。
 
+
+<img width="959" height="614" alt="image" src="https://github.com/user-attachments/assets/3871c37a-e099-406a-b8f4-dcdcc9271b17" />
+
 ---
 
 ## 为什么开发 OrbitStart？
@@ -120,6 +123,7 @@ OrbitStart 使用统一的资源模型管理不同类型的入口：
 * 图标与强调色
 * 收藏状态
 
+
 ---
 
 ### 搜索与快速启动
@@ -137,6 +141,10 @@ OrbitStart 支持从统一搜索入口查找本地资源和插件结果。
 * 插件提供的搜索结果
 
 搜索系统包含匹配评分、最近使用权重和拼音首字母等辅助逻辑，方便在资源数量较多时快速定位目标。
+
+<p align="center">
+  <img width="493" alt="OrbitStart Workspace Graph" src="https://github.com/user-attachments/assets/c43d33ef-4615-45a0-9c67-3749f5720a52" />
+</p>
 
 ---
 
@@ -278,10 +286,6 @@ OrbitStart 可以保存：
 
 OrbitStart 提供图形化工作区编辑模式，用节点和连接关系展示启动流程。
 
-<p align="center">
-  <img width="493" alt="OrbitStart Workspace Graph" src="https://github.com/user-attachments/assets/c43d33ef-4615-45a0-9c67-3749f5720a52" />
-</p>
-
 图形模式以“启动工作区”为根节点，各个步骤可以根据依赖关系形成不同分支。
 
 当前支持：
@@ -306,6 +310,9 @@ OrbitStart 提供图形化工作区编辑模式，用节点和连接关系展示
 * 前后依赖关系
 * 脚本与应用之间的关系
 * 复杂工作流的整体结构
+
+<img width="957" height="612" alt="image" src="https://github.com/user-attachments/assets/d257a01b-292d-4279-8802-4878764c2031" />
+
 
 ---
 
@@ -451,6 +458,9 @@ OrbitStart 可以索引本地 Obsidian Vault 中的 Markdown 笔记和复选框�
 * Todo 窗口置顶
 
 所有索引和配置均保存在本地。
+
+<img width="962" height="613" alt="image" src="https://github.com/user-attachments/assets/c0c85799-1990-4fd1-96a1-eb9126d3d13e" />
+
 
 ---
 
@@ -987,3 +997,10 @@ Organize resources around real tasks.
 [Releases](https://github.com/xuxinxi14/OrbitStart/releases) · [Issues](https://github.com/xuxinxi14/OrbitStart/issues) · [Source Code](https://github.com/xuxinxi14/OrbitStart)
 
 </div>
+
+## 请我喝杯咖啡？
+
+如果您愿意，可以请我喝一杯咖啡
+
+<img width="612" height="667" alt="862835ac21cc063610bd86c2e274579" src="https://github.com/user-attachments/assets/0f695fe7-d493-4691-8a1d-11f7e36fc67d" />   <img width="1372" height="1959" alt="1a576ac6bfa0998080478d7c736d0c2" src="https://github.com/user-attachments/assets/0a3b5d05-8fd5-44be-91ed-cc5396fcff80" />
+
