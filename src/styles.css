@@ -6294,7 +6294,7 @@ kbd {
    ========================================== */
 
 /* 1. Global Background Grid & Typography */
-:root[data-theme="orbit-dark"] body,
+:root[data-theme="orbit-dark"] body:not(.bubble-body):not(.bubble-menu-body),
 :root[data-theme="orbit-dark"] .app-shell,
 :root[data-theme="orbit-dark"] .sidebar {
   background-color: var(--bg) !important;
@@ -7877,6 +7877,12 @@ input.recording {
   opacity: 0.5 !important;
 }
 
+:root html.bubble-html,
+:root body.bubble-body,
+:root body.bubble-body #root,
+:root html.bubble-menu-html,
+:root body.bubble-menu-body,
+:root body.bubble-menu-body #root,
 html.bubble-html,
 body.bubble-body,
 body.bubble-body #root,
@@ -7884,6 +7890,7 @@ html.bubble-menu-html,
 body.bubble-menu-body,
 body.bubble-menu-body #root {
   background: transparent !important;
+  background-image: none !important;
   border: 0 !important;
   box-shadow: none !important;
   margin: 0 !important;

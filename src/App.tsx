@@ -5551,7 +5551,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.8.0</strong>版本</span>
+          <span><strong>0.8.1</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
