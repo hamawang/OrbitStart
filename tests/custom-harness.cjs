@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const http = require('http');
+const path = require('path');
 
 console.log('======================================================');
 console.log('OrbitStart Custom E2E Test Harness (Milestone 2)');
@@ -39,12 +40,43 @@ async function waitForDevServer(maxAttempts = 10, interval = 1000) {
   return false;
 }
 
-async function runTests() {
-  const serverRunning = await waitForDevServer(5, 1000);
-  if (!serverRunning) {
-    console.warn(`WARNING: Dev server is not responding at ${TARGET_URL}.`);
-    console.log('Assuming offline verification mode...');
+function startManagedDevServer() {
+  const viteBin = path.resolve(__dirname, '..', 'node_modules', 'vite', 'bin', 'vite.js');
+  return spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(TARGET_PORT)], {
+    cwd: path.resolve(__dirname, '..'),
+    stdio: 'inherit',
+    windowsHide: true
+  });
+}
+
+async function stopManagedDevServer(server) {
+  if (!server || server.exitCode !== null) return;
+  const exited = new Promise((resolve) => server.once('exit', resolve));
+  server.kill();
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  if (server.exitCode === null) {
+    server.kill('SIGKILL');
   }
+}
+
+async function runTests() {
+  if (await checkDevServer()) {
+    return runTestsAgainstServer();
+  }
+
+  console.log(`Starting an isolated Vite server at ${TARGET_URL} for this harness...`);
+  const server = startManagedDevServer();
+  try {
+    if (!await waitForDevServer(30, 1000)) {
+      throw new Error(`Vite dev server did not become ready at ${TARGET_URL}`);
+    }
+    await runTestsAgainstServer();
+  } finally {
+    await stopManagedDevServer(server);
+  }
+}
+
+async function runTestsAgainstServer() {
 
   let playwrightAvailable = false;
   let chromium;
@@ -169,4 +201,7 @@ async function runStaticValidation() {
   });
 }
 
-runTests();
+runTests().catch((error) => {
+  console.error('Custom harness failed:', error);
+  process.exitCode = 1;
+});

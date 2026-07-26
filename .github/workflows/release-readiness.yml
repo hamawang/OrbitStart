@@ -1,0 +1,38 @@
+name: Release readiness
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to validate, without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release-metadata:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate tag and signed updater metadata
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_VERSION } else { $env:REF_NAME.TrimStart('v') }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Expected a v-prefixed semver tag or a semver workflow input; received '$version'."
+          }
+          npm run version:check -- --expect-version $version
+          npm run release:verify -- --expect-version $version

@@ -1,6 +1,6 @@
 {
   "name": "orbitstart",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "package:plugin": "powershell -ExecutionPolicy Bypass -File tools/package-plugin.ps1",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "version:check": "node tools/check-version-consistency.mjs",
+    "release:verify": "node tools/check-version-consistency.mjs --release",
     "test:e2e": "playwright test tests/basic.spec.ts",
     "test:e2e:themes": "playwright test tests/atelier-zero.spec.ts",
     "test:custom": "node tests/custom-harness.cjs"

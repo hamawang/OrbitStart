@@ -1,11 +1,11 @@
 {
-  "version": "0.8.1",
-  "notes": "1. 修复 Zentou Wireframe 主题下悬浮启动球背景不透明（显示矩形灰白网格底色）的 Bug；\n2. 提升悬浮球背景透明度 CSS 规则优先级；\n3. 重新打包 GUI 为 0.8.1 版本。",
-  "pub_date": "2026-07-26T07:15:00.000Z",
+  "version": "0.8.2",
+  "notes": "0.8.2：重建 updater 签名密钥并提供完整安装包。由于旧私钥已经丢失，已安装旧版本的用户需要先手动安装本版本；此后的版本可使用新的自动更新签名链路。",
+  "pub_date": "2026-07-26T11:35:11Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmFCZmljUjBNMTJ1dFFFNjM0N1g1R1BMTGg5Vm51QUhTSFU3aDd0L3RJUGthTWJhSU5WelF4WUFMLy94em5adHdmZFNsdTJxRlhnNktQbFFacjJ4aXZhb3phRktWWXd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgyMzI3MDc3CWZpbGU6T3JiaXRTdGFydF8wLjYuMF94NjQtc2V0dXAuZXhlCm9RWGhqd0dBblVTV1NRRDhxdXVTck16WE01R05hTU1HNGTU1HNGFua2FuMmhCbWNPT0RPbUFHaTlVZHA2R01pV3BDcVdydHFGK29VTE9WbU9vS24yLy80MkJnPT0K",
-      "url": "https://github.com/xuxinxi14/OrbitStart/releases/download/v0.8.1/OrbitStart_0.8.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZ2YvYVFTNUwzcDNhSksxeGswWE1hdmdaSzQwOE9CRkJmU1RheGVRMW8rTlNBaEhXMHN5aW5ROXBjS0k2b0xrR2kyUkFKL2ZLcWpaNHBhb2FBQ05SeVR3Q2MzbHo3RkFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1MDY1NTk4CWZpbGU6T3JiaXRTdGFydF8wLjguMl94NjQtc2V0dXAuZXhlCnF1dDdtT1JTTzFuMVRFUzlvL0FzcE8yRkI1SXJVUEQ0cmNpekp3dERCdXNRcFZONnhZV0FYSzhtREJWZkZ3Wmo5RGt1UmVoSGYwd21jM2tWR0tab0FBPT0K",
+      "url": "https://github.com/xuxinxi14/OrbitStart/releases/download/v0.8.2/OrbitStart_0.8.2_x64-setup.exe"
     }
   }
 }

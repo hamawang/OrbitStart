@@ -287,10 +287,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.8.1 on the about page', async ({ page }) => {
+  test('should show version 0.8.2 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.8.1');
+    await expect(page.locator('.about-card')).toContainText('0.8.2');
   });
 
   test('should display and interact with the sub-directory selection modal', async ({ page }) => {
@@ -452,5 +452,143 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(item2.group.split(',')).not.toContain('web');
     expect(item2.group.split(',')).toContain('apps');
   });
-});
 
+  test('should keep browser preview storage behavior without a Tauri bridge', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const bridgeDescriptor = Object.getOwnPropertyDescriptor(window, '__TAURI_INTERNALS__');
+      if (bridgeDescriptor) delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+
+      try {
+        const native = await import('/src/lib/native.ts');
+        const input = {
+          title: 'Browser fallback item',
+          subtitle: 'C:\\Preview\\browser-fallback.exe',
+          kind: 'app' as const,
+          group: 'apps',
+          target: 'C:\\Preview\\browser-fallback.exe',
+          aliases: ['browser fallback'],
+          tags: ['fallback-test'],
+          icon: 'AppWindow',
+          accent: '#5cc8ff',
+          favorite: false
+        };
+
+        const snapshot = await native.loadSnapshot();
+        const created = await native.createItem(input);
+        const updated = await native.updateItem({ ...created, title: 'Browser fallback item updated' });
+        await native.deleteItem(updated.id);
+        const imported = await native.importCatalogJson(JSON.stringify({ items: [{ ...created, id: 'browser-imported-item' }] }));
+        const themed = await native.setActiveTheme('atelier-zero');
+        const pluginSnapshot = await native.setPluginEnabled('core-items', false);
+        const storedItems = JSON.parse(window.localStorage.getItem('orbitstart.browser.items') ?? '[]') as Array<{ id: string }>;
+
+        return {
+          snapshotHasItems: snapshot.items.length > 0,
+          deletedItemIsAbsent: !storedItems.some((item) => item.id === updated.id),
+          importedItemIsPresent: storedItems.some((item) => item.id === 'browser-imported-item'),
+          imported: imported.imported,
+          activeThemeId: themed.activeThemeId,
+          pluginEnabled: pluginSnapshot.plugins.find((plugin) => plugin.id === 'core-items')?.enabled
+        };
+      } finally {
+        if (bridgeDescriptor) {
+          Object.defineProperty(window, '__TAURI_INTERNALS__', bridgeDescriptor);
+        }
+      }
+    });
+
+    expect(result.snapshotHasItems).toBe(true);
+    expect(result.deletedItemIsAbsent).toBe(true);
+    expect(result.importedItemIsPresent).toBe(true);
+    expect(result.imported).toBe(1);
+    expect(result.activeThemeId).toBe('atelier-zero');
+    expect(result.pluginEnabled).toBe(false);
+  });
+
+  test('should surface Tauri invocation failures without mutating browser fallback storage', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const native = await import('/src/lib/native.ts');
+      const item = {
+        id: 'native-command-error-item',
+        title: 'Native command error item',
+        subtitle: 'C:\\Native\\error.exe',
+        kind: 'app' as const,
+        group: 'apps',
+        target: 'C:\\Native\\error.exe',
+        aliases: [],
+        tags: [],
+        icon: 'AppWindow',
+        accent: '#5cc8ff',
+        favorite: false,
+        launchCount: 0
+      };
+      const storageKeys = [
+        'orbitstart.browser.items',
+        'orbitstart.browser.snapshot',
+        'orbitstart.browser.trips',
+        'orbitstart.browser.obsidian.vaults',
+        'orbitstart.browser.obsidian.notes',
+        'orbitstart.browser.obsidian.tasks'
+      ];
+      const initialStorage = Object.fromEntries(storageKeys.map((key) => [key, window.localStorage.getItem(key)]));
+      const bridgeDescriptor = Object.getOwnPropertyDescriptor(window, '__TAURI_INTERNALS__');
+
+      Object.defineProperty(window, '__TAURI_INTERNALS__', {
+        configurable: true,
+        value: {
+          invoke: async (command: string) => {
+            if (command === 'log_frontend_error') return undefined;
+            throw new Error(`IPC failed for ${command}`);
+          }
+        }
+      });
+
+      const commands: Array<[string, () => Promise<unknown>]> = [
+        ['catalog_snapshot', () => native.loadSnapshot()],
+        ['create_item', () => native.createItem(item)],
+        ['update_item', () => native.updateItem(item)],
+        ['delete_item', () => native.deleteItem(item.id)],
+        ['import_catalog_json', () => native.importCatalogJson(JSON.stringify({ items: [] }))],
+        ['set_active_theme', () => native.setActiveTheme('atelier-zero')],
+        ['set_plugin_enabled', () => native.setPluginEnabled('core-items', false)]
+      ];
+
+      try {
+        const failures = [] as Array<{ expectedCommand: string; name: string; command?: string }>;
+        for (const [expectedCommand, invoke] of commands) {
+          try {
+            await invoke();
+            failures.push({ expectedCommand, name: 'resolved' });
+          } catch (error) {
+            const nativeError = error as { name?: string; command?: string };
+            failures.push({
+              expectedCommand,
+              name: nativeError.name ?? 'UnknownError',
+              command: nativeError.command
+            });
+          }
+        }
+
+        const finalStorage = Object.fromEntries(storageKeys.map((key) => [key, window.localStorage.getItem(key)]));
+        return { failures, storageUnchanged: JSON.stringify(initialStorage) === JSON.stringify(finalStorage) };
+      } finally {
+        if (bridgeDescriptor) {
+          Object.defineProperty(window, '__TAURI_INTERNALS__', bridgeDescriptor);
+        } else {
+          delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+        }
+      }
+    });
+
+    expect(result.storageUnchanged).toBe(true);
+    expect(result.failures).toEqual([
+      { expectedCommand: 'catalog_snapshot', name: 'NativeCommandError', command: 'catalog_snapshot' },
+      { expectedCommand: 'create_item', name: 'NativeCommandError', command: 'create_item' },
+      { expectedCommand: 'update_item', name: 'NativeCommandError', command: 'update_item' },
+      { expectedCommand: 'delete_item', name: 'NativeCommandError', command: 'delete_item' },
+      { expectedCommand: 'import_catalog_json', name: 'NativeCommandError', command: 'import_catalog_json' },
+      { expectedCommand: 'set_active_theme', name: 'NativeCommandError', command: 'set_active_theme' },
+      { expectedCommand: 'set_plugin_enabled', name: 'NativeCommandError', command: 'set_plugin_enabled' }
+    ]);
+  });
+});

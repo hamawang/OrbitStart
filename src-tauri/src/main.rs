@@ -1,16 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::{engine::general_purpose, Engine as _};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{
+    backup::{Backup, StepResult},
+    params, Connection, OptionalExtension, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg(desktop)]
 use tauri::{
@@ -181,6 +184,15 @@ struct AppSettings {
     bubble_avoid_fullscreen: bool,
 }
 
+/// Runtime state that is safe to share between Tauri command handlers.
+///
+/// Database connections remain short lived so file scans and imports do not
+/// hold a global connection lock. Settings are cached because a few window
+/// lifecycle paths run frequently and must not open SQLite on every poll.
+struct AppState {
+    settings: RwLock<AppSettings>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CatalogSnapshot {
@@ -191,6 +203,18 @@ struct CatalogSnapshot {
     themes: Vec<ThemeManifest>,
     settings: AppSettings,
     logs: Vec<PluginLog>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowAppearance {
+    themes: Vec<ThemeManifest>,
+    settings: AppSettings,
+}
+
+#[derive(Clone, Serialize)]
+struct ItemDeletedEvent {
+    id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -398,16 +422,298 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("orbit.db"))
 }
 
-fn open_db() -> Result<Connection, String> {
-    let conn = Connection::open(db_path()?)
-        .map_err(|error| format!("Failed to open database: {error}"))?;
-    // 设置 5 秒的繁忙超时，防止多线程同时访问数据库时抛出 "database is locked" 错误
-    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
-    init_db(&conn)?;
+fn open_database_connection_at(path: &Path) -> Result<Connection, String> {
+    let conn =
+        Connection::open(path).map_err(|error| format!("Failed to open database: {error}"))?;
+    // Set a bounded wait for concurrent short-lived command connections.
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| format!("Failed to configure database busy timeout: {error}"))?;
     Ok(conn)
 }
 
-fn init_db(conn: &Connection) -> Result<(), String> {
+fn open_database_connection() -> Result<Connection, String> {
+    let path = db_path()?;
+    open_database_connection_at(&path)
+}
+
+/// Performs schema/bootstrap work exactly once during startup (or after an
+/// explicit reset). Ordinary command paths must call `open_db` instead.
+fn initialize_database() -> Result<AppSettings, String> {
+    let path = db_path()?;
+    let mut conn = open_database_connection_at(&path)?;
+    run_migrations(&mut conn, Some(&path))?;
+    bootstrap_database_data(&conn)?;
+    ensure_local_templates()?;
+    app_settings(&conn)
+}
+
+fn open_db() -> Result<Connection, String> {
+    open_database_connection()
+}
+
+const CURRENT_SCHEMA_VERSION: i32 = 7;
+
+#[derive(Clone, Copy)]
+struct DatabaseMigration {
+    version: i32,
+    name: &'static str,
+    apply: fn(&Connection) -> Result<(), String>,
+}
+
+const DATABASE_MIGRATIONS: [DatabaseMigration; 7] = [
+    DatabaseMigration {
+        version: 1,
+        name: "initial_core_schema",
+        apply: migration_001_initial_core_schema,
+    },
+    DatabaseMigration {
+        version: 2,
+        name: "trips",
+        apply: migration_002_trips,
+    },
+    DatabaseMigration {
+        version: 3,
+        name: "obsidian_and_item_sort_order",
+        apply: migration_003_obsidian_and_item_sort_order,
+    },
+    DatabaseMigration {
+        version: 4,
+        name: "group_sort_order",
+        apply: migration_004_group_sort_order,
+    },
+    DatabaseMigration {
+        version: 5,
+        name: "item_arguments",
+        apply: migration_005_item_arguments,
+    },
+    DatabaseMigration {
+        version: 6,
+        name: "item_sub_tag",
+        apply: migration_006_item_sub_tag,
+    },
+    DatabaseMigration {
+        version: 7,
+        name: "shortcut_scan_cache",
+        apply: migration_007_shortcut_scan_cache,
+    },
+];
+
+fn schema_version(conn: &Connection) -> Result<i32, String> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| format!("Failed to read database schema version: {error}"))
+}
+
+fn database_has_user_schema(conn: &Connection) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|exists| exists != 0)
+    .map_err(|error| format!("Failed to inspect existing database schema: {error}"))
+}
+
+fn run_migrations(conn: &mut Connection, db_file: Option<&Path>) -> Result<(), String> {
+    debug_assert_eq!(
+        DATABASE_MIGRATIONS
+            .last()
+            .map(|migration| migration.version),
+        Some(CURRENT_SCHEMA_VERSION)
+    );
+    run_migrations_with_plan(conn, db_file, &DATABASE_MIGRATIONS)
+}
+
+fn run_migrations_with_plan(
+    conn: &mut Connection,
+    db_file: Option<&Path>,
+    migrations: &[DatabaseMigration],
+) -> Result<(), String> {
+    let current_version = schema_version(conn)?;
+    let latest_version = migrations
+        .last()
+        .map(|migration| migration.version)
+        .ok_or_else(|| "Database migration plan is empty".to_string())?;
+
+    if current_version > latest_version {
+        return Err(format!(
+            "Database schema version {current_version} is newer than this OrbitStart build supports ({latest_version})."
+        ));
+    }
+    if current_version == latest_version {
+        return Ok(());
+    }
+
+    let backup_path = if database_has_user_schema(conn)? {
+        if let Some(db_file) = db_file {
+            Some(create_pre_migration_backup(conn, db_file, current_version)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    apply_migration_plan(conn, migrations).map_err(|error| {
+        if let Some(path) = backup_path {
+            format!(
+                "{error}. The pre-migration backup was preserved at {}",
+                path.display()
+            )
+        } else {
+            error
+        }
+    })
+}
+
+fn apply_migration_plan(
+    conn: &mut Connection,
+    migrations: &[DatabaseMigration],
+) -> Result<(), String> {
+    let current_version = schema_version(conn)?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Failed to begin database migration transaction: {error}"))?;
+
+    for migration in migrations
+        .iter()
+        .filter(|migration| migration.version > current_version)
+    {
+        (migration.apply)(&transaction).map_err(|error| {
+            format!(
+                "Database migration {:03} ({}) failed: {error}",
+                migration.version, migration.name
+            )
+        })?;
+        transaction
+            .pragma_update(None, "user_version", migration.version)
+            .map_err(|error| {
+                format!(
+                    "Failed to record database migration {:03} ({}): {error}",
+                    migration.version, migration.name
+                )
+            })?;
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Failed to commit database migrations: {error}"))
+}
+
+fn create_pre_migration_backup(
+    source: &Connection,
+    db_file: &Path,
+    from_version: i32,
+) -> Result<PathBuf, String> {
+    let parent = db_file.parent().ok_or_else(|| {
+        format!(
+            "Database path has no parent directory: {}",
+            db_file.display()
+        )
+    })?;
+    let backups_dir = parent.join("backups");
+    fs::create_dir_all(&backups_dir)
+        .map_err(|error| format!("Failed to create migration backup directory: {error}"))?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let final_path = (0..100)
+        .map(|attempt| {
+            let suffix = if attempt == 0 {
+                String::new()
+            } else {
+                format!("-{attempt}")
+            };
+            backups_dir.join(format!(
+                "pre-migration-{from_version:03}-{timestamp}{suffix}.db"
+            ))
+        })
+        .find(|candidate| !candidate.exists() && !candidate.with_extension("partial").exists())
+        .ok_or_else(|| "Could not allocate a unique migration backup filename".to_string())?;
+    let partial_path = final_path.with_extension("partial");
+
+    let backup_result = (|| -> Result<(), String> {
+        let mut destination = Connection::open(&partial_path)
+            .map_err(|error| format!("Failed to create migration backup: {error}"))?;
+        destination
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| format!("Failed to configure migration backup: {error}"))?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let backup = Backup::new(source, &mut destination)
+            .map_err(|error| format!("Failed to start migration backup: {error}"))?;
+        loop {
+            match backup
+                .step(100)
+                .map_err(|error| format!("Failed to copy migration backup: {error}"))?
+            {
+                StepResult::Done => break,
+                StepResult::More => {}
+                StepResult::Busy | StepResult::Locked => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err("Timed out while creating the migration backup".to_string());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                _ => return Err("Migration backup returned an unsupported state".to_string()),
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = backup_result {
+        let _ = fs::remove_file(&partial_path);
+        return Err(error);
+    }
+    fs::rename(&partial_path, &final_path)
+        .map_err(|error| format!("Failed to finalize migration backup: {error}"))?;
+    Ok(final_path)
+}
+
+fn bootstrap_database_data(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+        .map_err(|error| format!("Failed to count items: {error}"))?;
+
+    if count == 0 {
+        let mut seeds = seed_items();
+        seeds.reverse();
+        for item in seeds {
+            insert_item(conn, &item)?;
+        }
+    }
+
+    seed_groups(conn)?;
+    seed_plugin_states(conn)?;
+    ensure_default_settings(conn)?;
+    Ok(())
+}
+
+fn ensure_table_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("Failed to inspect table {table}: {error}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Failed to read table info for {table}: {error}"))?;
+    for row in rows {
+        if row.map_err(|error| format!("Failed to map table info for {table}: {error}"))? == column
+        {
+            return Ok(());
+        }
+    }
+    conn.execute(alter_sql, [])
+        .map_err(|error| format!("Failed to migrate table {table}: {error}"))?;
+    Ok(())
+}
+
+fn migration_001_initial_core_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS items (
@@ -417,7 +723,6 @@ fn init_db(conn: &Connection) -> Result<(), String> {
             kind TEXT NOT NULL,
             group_id TEXT NOT NULL,
             target TEXT NOT NULL UNIQUE,
-            arguments TEXT NOT NULL DEFAULT '',
             aliases_json TEXT NOT NULL,
             tags_json TEXT NOT NULL,
             icon TEXT NOT NULL,
@@ -458,7 +763,14 @@ fn init_db(conn: &Connection) -> Result<(), String> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        "#,
+    )
+    .map_err(|error| format!("Failed to create initial database schema: {error}"))
+}
 
+fn migration_002_trips(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS trips (
             id TEXT PRIMARY KEY,
             item_id TEXT NOT NULL,
@@ -475,20 +787,14 @@ fn init_db(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_trips_item_id ON trips(item_id);
         CREATE INDEX IF NOT EXISTS idx_trips_updated_at ON trips(updated_at DESC);
+        "#,
+    )
+    .map_err(|error| format!("Failed to create trips schema: {error}"))
+}
 
-        CREATE TABLE IF NOT EXISTS shortcut_scan_cache (
-            shortcut_path TEXT PRIMARY KEY,
-            modified_at INTEGER NOT NULL,
-            file_size INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            target_path TEXT NOT NULL DEFAULT '',
-            arguments TEXT NOT NULL DEFAULT '',
-            working_directory TEXT NOT NULL DEFAULT '',
-            icon_location TEXT NOT NULL DEFAULT '',
-            icon_data TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-
+fn migration_003_obsidian_and_item_sort_order(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS obsidian_vaults (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -511,7 +817,6 @@ fn init_db(conn: &Connection) -> Result<(), String> {
             frontmatter_json TEXT,
             modified_at TEXT NOT NULL,
             indexed_at TEXT NOT NULL,
-            favorite INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (vault_id) REFERENCES obsidian_vaults(id) ON DELETE CASCADE
         );
 
@@ -541,7 +846,7 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_obsidian_tasks_due ON obsidian_tasks(due_date);
         "#,
     )
-    .map_err(|error| format!("Failed to initialize database: {error}"))?;
+    .map_err(|error| format!("Failed to create Obsidian schema: {error}"))?;
 
     ensure_table_column(
         conn,
@@ -549,94 +854,364 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         "favorite",
         "ALTER TABLE obsidian_notes ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
     )?;
-
-    ensure_table_column(
-        conn,
-        "items",
-        "arguments",
-        "ALTER TABLE items ADD COLUMN arguments TEXT NOT NULL DEFAULT ''",
-    )?;
-
     ensure_table_column(
         conn,
         "items",
         "sort_order",
         "ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
     )?;
-
-    ensure_table_column(
-        conn,
-        "items",
-        "sub_tag",
-        "ALTER TABLE items ADD COLUMN sub_tag TEXT NOT NULL DEFAULT ''",
-    )?;
-
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_items_sort_order ON items(sort_order)",
         [],
     )
-    .map_err(|error| format!("Failed to create sort_order index: {error}"))?;
+    .map_err(|error| format!("Failed to create item sort-order index: {error}"))?;
+    Ok(())
+}
 
+fn migration_004_group_sort_order(conn: &Connection) -> Result<(), String> {
     ensure_table_column(
         conn,
         "groups",
         "sort_order",
         "ALTER TABLE groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
     )?;
-
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_groups_sort_order ON groups(sort_order)",
         [],
     )
-    .map_err(|error| format!("Failed to create groups sort_order index: {error}"))?;
+    .map_err(|error| format!("Failed to create group sort-order index: {error}"))?;
 
     for (index, group) in default_groups().iter().enumerate() {
-        let _ = conn.execute(
+        conn.execute(
             "UPDATE groups SET sort_order = ?1 WHERE id = ?2 AND (sort_order = 0 OR sort_order IS NULL)",
             params![index as i64, &group.id],
-        );
+        )
+        .map_err(|error| format!("Failed to backfill group sort order: {error}"))?;
     }
-
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
-        .map_err(|error| format!("Failed to count items: {error}"))?;
-
-    if count == 0 {
-        let mut seeds = seed_items();
-        seeds.reverse();
-        for item in seeds {
-            insert_item(conn, &item)?;
-        }
-    }
-
-    seed_groups(conn)?;
-    seed_plugin_states(conn)?;
-    ensure_default_settings(conn)?;
-    ensure_local_templates()?;
     Ok(())
 }
 
-fn ensure_table_column(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    alter_sql: &str,
-) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|error| format!("Failed to inspect table {table}: {error}"))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("Failed to read table info for {table}: {error}"))?;
-    for row in rows {
-        if row.map_err(|error| format!("Failed to map table info for {table}: {error}"))? == column
-        {
-            return Ok(());
+fn migration_005_item_arguments(conn: &Connection) -> Result<(), String> {
+    ensure_table_column(
+        conn,
+        "items",
+        "arguments",
+        "ALTER TABLE items ADD COLUMN arguments TEXT NOT NULL DEFAULT ''",
+    )
+}
+
+fn migration_006_item_sub_tag(conn: &Connection) -> Result<(), String> {
+    ensure_table_column(
+        conn,
+        "items",
+        "sub_tag",
+        "ALTER TABLE items ADD COLUMN sub_tag TEXT NOT NULL DEFAULT ''",
+    )
+}
+
+fn migration_007_shortcut_scan_cache(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS shortcut_scan_cache (
+            shortcut_path TEXT PRIMARY KEY,
+            modified_at INTEGER NOT NULL,
+            file_size INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            target_path TEXT NOT NULL DEFAULT '',
+            arguments TEXT NOT NULL DEFAULT '',
+            working_directory TEXT NOT NULL DEFAULT '',
+            icon_location TEXT NOT NULL DEFAULT '',
+            icon_data TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .map_err(|error| format!("Failed to create shortcut scan cache schema: {error}"))
+}
+
+#[cfg(test)]
+fn init_db(conn: &mut Connection) -> Result<(), String> {
+    run_migrations(conn, None)?;
+    bootstrap_database_data(conn)
+}
+
+#[cfg(test)]
+mod database_migration_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDatabase {
+        root: PathBuf,
+        path: PathBuf,
+    }
+
+    impl TestDatabase {
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            let counter = TEST_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "orbitstart-migration-{label}-{}-{nonce}-{counter}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("test database directory should be created");
+            let path = root.join("orbit.db");
+            Self { root, path }
         }
     }
-    conn.execute(alter_sql, [])
-        .map_err(|error| format!("Failed to migrate table {table}: {error}"))?;
-    Ok(())
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn test_connection(database: &TestDatabase) -> Connection {
+        open_database_connection_at(&database.path)
+            .expect("temporary test database should open successfully")
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut statement = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("table info query should prepare");
+        let exists = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("table info query should execute")
+            .filter_map(Result::ok)
+            .any(|name| name == column);
+        exists
+    }
+
+    fn backup_files(database: &TestDatabase) -> Vec<PathBuf> {
+        let backups = database.root.join("backups");
+        let Ok(entries) = fs::read_dir(backups) else {
+            return Vec::new();
+        };
+        let mut paths = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("db"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    }
+
+    fn create_legacy_core_schema(conn: &Connection) {
+        migration_001_initial_core_schema(conn).expect("legacy core schema should be created");
+        conn.execute_batch(
+            r#"
+            INSERT INTO groups (id, title, icon, description, custom, created_at)
+            VALUES ('apps', 'Apps', 'AppWindow', '', 0, '0');
+            INSERT INTO items (
+                id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
+                icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at
+            ) VALUES (
+                'legacy-item', 'Legacy item', 'legacy', 'app', 'apps', 'C:/legacy.exe', '[]', '[]',
+                'AppWindow', '#ffffff', 0, 3, NULL, '0', '0'
+            );
+            "#,
+        )
+        .expect("legacy data should be inserted");
+    }
+
+    #[test]
+    fn initializes_an_empty_database_without_a_migration_backup() {
+        let database = TestDatabase::new("empty");
+        let mut conn = test_connection(&database);
+
+        run_migrations(&mut conn, Some(&database.path)).expect("empty database should initialize");
+
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            7
+        );
+        assert!(column_exists(&conn, "items", "arguments"));
+        assert!(column_exists(&conn, "items", "sort_order"));
+        assert!(column_exists(&conn, "items", "sub_tag"));
+        assert!(column_exists(&conn, "groups", "sort_order"));
+        assert!(column_exists(&conn, "obsidian_notes", "favorite"));
+        assert!(backup_files(&database).is_empty());
+    }
+
+    #[test]
+    fn upgrades_a_legacy_database_and_preserves_its_data_in_a_backup() {
+        let database = TestDatabase::new("legacy");
+        let mut conn = test_connection(&database);
+        create_legacy_core_schema(&conn);
+
+        run_migrations(&mut conn, Some(&database.path)).expect("legacy database should migrate");
+
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            7
+        );
+        let values: (String, String, i64) = conn
+            .query_row(
+                "SELECT arguments, sub_tag, launch_count FROM items WHERE id = 'legacy-item'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("legacy item should remain after migration");
+        assert_eq!(values.0, "");
+        assert_eq!(values.1, "");
+        assert_eq!(values.2, 3);
+
+        let backups = backup_files(&database);
+        assert_eq!(backups.len(), 1, "legacy upgrades should create one backup");
+        let backup = Connection::open(&backups[0]).expect("migration backup should open");
+        assert_eq!(
+            schema_version(&backup).expect("backup version should read"),
+            0
+        );
+        assert!(
+            !column_exists(&backup, "items", "arguments"),
+            "backup must preserve the pre-migration schema"
+        );
+        let legacy_count: i64 = backup
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE id = 'legacy-item'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backup should contain the legacy item");
+        assert_eq!(legacy_count, 1);
+    }
+
+    #[test]
+    fn upgrades_an_unversioned_current_schema_without_column_conflicts() {
+        let database = TestDatabase::new("current-v0");
+        let mut conn = test_connection(&database);
+        create_legacy_core_schema(&conn);
+        run_migrations(&mut conn, None).expect("first migration should produce the current schema");
+        conn.pragma_update(None, "user_version", 0)
+            .expect("test database version should reset to zero");
+
+        run_migrations(&mut conn, Some(&database.path))
+            .expect("unversioned current schema should migrate idempotently");
+
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            7
+        );
+        assert!(column_exists(&conn, "items", "arguments"));
+        assert!(column_exists(&conn, "items", "sort_order"));
+        assert!(column_exists(&conn, "items", "sub_tag"));
+        let item_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE id = 'legacy-item'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("current schema data should remain");
+        assert_eq!(item_count, 1);
+        assert_eq!(backup_files(&database).len(), 1);
+    }
+
+    #[test]
+    fn latest_schema_does_not_repeat_migrations_or_create_backups() {
+        let database = TestDatabase::new("latest");
+        let mut conn = test_connection(&database);
+        run_migrations(&mut conn, Some(&database.path)).expect("empty database should initialize");
+        let schema_before: Vec<String> = {
+            let mut statement = conn
+                .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+                .expect("schema snapshot query should prepare");
+            statement
+                .query_map([], |row| row.get(0))
+                .expect("schema snapshot query should execute")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("schema snapshot should read")
+        };
+
+        run_migrations(&mut conn, Some(&database.path)).expect("latest schema should be a no-op");
+
+        let schema_after: Vec<String> = {
+            let mut statement = conn
+                .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+                .expect("schema snapshot query should prepare");
+            statement
+                .query_map([], |row| row.get(0))
+                .expect("schema snapshot query should execute")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("schema snapshot should read")
+        };
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            7
+        );
+        assert_eq!(schema_after, schema_before);
+        assert!(backup_files(&database).is_empty());
+    }
+
+    fn create_probe_table(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch("CREATE TABLE migration_probe (id INTEGER PRIMARY KEY);")
+            .map_err(|error| format!("Failed to create probe table: {error}"))
+    }
+
+    fn fail_migration(_conn: &Connection) -> Result<(), String> {
+        Err("injected migration failure".to_string())
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_and_keeps_the_pre_migration_backup() {
+        let database = TestDatabase::new("failure");
+        let mut conn = test_connection(&database);
+        conn.execute_batch(
+            "CREATE TABLE legacy_records (id INTEGER PRIMARY KEY, label TEXT NOT NULL); \
+             INSERT INTO legacy_records (label) VALUES ('keep me');",
+        )
+        .expect("legacy test data should be created");
+        let migrations = [
+            DatabaseMigration {
+                version: 1,
+                name: "probe",
+                apply: create_probe_table,
+            },
+            DatabaseMigration {
+                version: 2,
+                name: "injected_failure",
+                apply: fail_migration,
+            },
+        ];
+
+        let error = run_migrations_with_plan(&mut conn, Some(&database.path), &migrations)
+            .expect_err("injected migration failure should abort startup");
+
+        assert!(error.contains("injected migration failure"));
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            0
+        );
+        let probe_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_probe'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("probe table query should run");
+        assert_eq!(probe_exists, 0, "failed migration DDL must roll back");
+        let source_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM legacy_records", [], |row| row.get(0))
+            .expect("legacy source data should remain");
+        assert_eq!(source_rows, 1);
+
+        let backups = backup_files(&database);
+        assert_eq!(
+            backups.len(),
+            1,
+            "failed migration should retain its backup"
+        );
+        let backup = Connection::open(&backups[0]).expect("migration backup should open");
+        let backup_rows: i64 = backup
+            .query_row("SELECT COUNT(*) FROM legacy_records", [], |row| row.get(0))
+            .expect("backup should preserve legacy source data");
+        assert_eq!(backup_rows, 1);
+    }
 }
 
 fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
@@ -731,6 +1306,55 @@ fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
             .unwrap_or(200),
         bubble_avoid_fullscreen: setting(conn, "bubble_avoid_fullscreen", "false")? == "true",
     })
+}
+
+fn cached_settings(app: &tauri::AppHandle) -> Result<AppSettings, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Runtime settings state is unavailable".to_string())?;
+    state
+        .settings
+        .read()
+        .map(|settings| settings.clone())
+        .map_err(|_| "Runtime settings cache lock is poisoned".to_string())
+}
+
+fn replace_cached_settings(app: &tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Runtime settings state is unavailable".to_string())?;
+    let mut cached = state
+        .settings
+        .write()
+        .map_err(|_| "Runtime settings cache lock is poisoned".to_string())?;
+    *cached = settings;
+    Ok(())
+}
+
+fn cache_settings_from_connection(
+    app: &tauri::AppHandle,
+    conn: &Connection,
+) -> Result<AppSettings, String> {
+    let settings = app_settings(conn)?;
+    replace_cached_settings(app, settings.clone())?;
+    Ok(settings)
+}
+
+fn snapshot_after_setting_update(app: &tauri::AppHandle) -> Result<CatalogSnapshot, String> {
+    let snapshot = catalog_snapshot()?;
+    replace_cached_settings(app, snapshot.settings.clone())?;
+    let _ = app.emit("orbit://settings-updated", snapshot.settings.clone());
+    let _ = app.emit("orbit://refresh-resources", ());
+    Ok(snapshot)
+}
+
+fn settings_after_setting_update(
+    app: &tauri::AppHandle,
+    conn: &Connection,
+) -> Result<AppSettings, String> {
+    let settings = cache_settings_from_connection(app, conn)?;
+    let _ = app.emit("orbit://settings-updated", settings.clone());
+    Ok(settings)
 }
 
 fn seed_items() -> Vec<OrbitItemInput> {
@@ -1195,10 +1819,10 @@ fn all_plugins(conn: &Connection) -> Result<Vec<PluginManifest>, String> {
     #[cfg(feature = "lite")]
     {
         plugins.retain(|p| {
-            p.id != "tips-search" && 
-            p.id != "obsidian-search" && 
-            p.id != "workspaces" && 
-            p.id != "core-obsidian"
+            p.id != "tips-search"
+                && p.id != "obsidian-search"
+                && p.id != "workspaces"
+                && p.id != "core-obsidian"
         });
     }
 
@@ -2808,6 +3432,15 @@ fn catalog_snapshot() -> Result<CatalogSnapshot, String> {
     })
 }
 
+#[tauri::command]
+fn window_appearance() -> Result<WindowAppearance, String> {
+    let conn = open_db()?;
+    Ok(WindowAppearance {
+        themes: all_themes()?,
+        settings: app_settings(&conn)?,
+    })
+}
+
 fn normalize_trip_category(category: &str) -> String {
     match category {
         "shortcut" | "workflow" | "note" | "status" | "reference" => category.to_string(),
@@ -3337,8 +3970,8 @@ fn update_workspace_hotkey(
 
         if !old_hotkey.is_empty() {
             let normalized_old = normalize_hotkey(&old_hotkey);
-            if let Ok(old_shortcut) = normalized_old
-                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            if let Ok(old_shortcut) =
+                normalized_old.parse::<tauri_plugin_global_shortcut::Shortcut>()
             {
                 let _ = shortcut_manager.unregister(old_shortcut);
             }
@@ -3485,7 +4118,7 @@ fn update_subtag_hotkey(
 fn create_item(app: tauri::AppHandle, input: OrbitItemInput) -> Result<OrbitItem, String> {
     let conn = open_db()?;
     let item = insert_item(&conn, &input)?;
-    let _ = app.emit("orbit://refresh-resources", ());
+    let _ = app.emit("orbit://item-created", item.clone());
     Ok(item)
 }
 
@@ -3542,7 +4175,9 @@ fn create_items_from_paths(
             "info",
             &format!("Drag-drop import completed: {} resources", created.len()),
         )?;
-        let _ = app.emit("orbit://refresh-resources", ());
+        for item in &created {
+            let _ = app.emit("orbit://item-created", item.clone());
+        }
     }
     Ok(created)
 }
@@ -3553,8 +4188,8 @@ mod dropped_resource_group_tests {
 
     #[test]
     fn assigns_dropped_resources_to_the_requested_group() {
-        let conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&mut conn).expect("in-memory database should initialize");
         let paths = vec![r#"C:\DropTest\DroppedProjectFolder"#.to_string()];
 
         let created = create_items_from_paths_with_conn(&conn, &paths, Some("apps"))
@@ -3573,8 +4208,8 @@ mod dropped_resource_group_tests {
 
     #[test]
     fn rejects_unknown_drop_target_groups() {
-        let conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&mut conn).expect("in-memory database should initialize");
         let paths = vec![r#"C:\DropTest\UnknownGroupFolder"#.to_string()];
 
         let result = create_items_from_paths_with_conn(&conn, &paths, Some("missing-group"));
@@ -3815,6 +4450,55 @@ fn normalize_obsidian_vault_path(path: &str) -> Result<PathBuf, String> {
         return Err("Obsidian vault path is not a folder".to_string());
     }
     Ok(canonical)
+}
+
+fn normalize_obsidian_note_relative_path(path: &str) -> Result<String, String> {
+    let value = path.trim().replace('\\', "/");
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+
+    let looks_like_windows_drive_path = value.as_bytes().get(1).is_some_and(|byte| *byte == b':')
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    if value.starts_with('/') || looks_like_windows_drive_path || Path::new(&value).is_absolute() {
+        return Err("Obsidian note path must be relative to its vault".to_string());
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in Path::new(&value).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(segment) => normalized.push(segment),
+            Component::ParentDir | Component::RootDir => {
+                return Err("Obsidian note path cannot leave its vault".to_string())
+            }
+            _ => return Err("Obsidian note path must be relative to its vault".to_string()),
+        }
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
+}
+
+fn resolve_obsidian_note_path(
+    vault_root: &Path,
+    relative_path: &str,
+) -> Result<(PathBuf, String), String> {
+    let candidate = vault_root.join(relative_path);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("Obsidian note is unavailable; rescan the vault: {error}"))?;
+    if !canonical.starts_with(vault_root) {
+        return Err("Obsidian note path resolves outside its vault".to_string());
+    }
+    let relative = canonical
+        .strip_prefix(vault_root)
+        .map_err(|_| "Obsidian note path resolves outside its vault".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok((canonical, relative))
 }
 
 fn vault_name_from_path(path: &Path) -> String {
@@ -4475,10 +5159,12 @@ fn open_obsidian_note(
     let conn = open_db()?;
     let vault = get_obsidian_vault(&conn, &vault_id)?
         .ok_or_else(|| "Obsidian vault not found".to_string())?;
-    let relative_path = relative_path.trim().replace('\\', "/");
+    let vault_root = normalize_obsidian_vault_path(&vault.path)?;
+    let relative_path = normalize_obsidian_note_relative_path(&relative_path)?;
     if relative_path.is_empty() {
-        return launch_target(vault.path);
+        return launch_target(vault_root.to_string_lossy().to_string());
     }
+    let (note_path, relative_path) = resolve_obsidian_note_path(&vault_root, &relative_path)?;
     if vault.open_in_obsidian {
         let mut target = format!(
             "obsidian://open?vault={}&file={}",
@@ -4491,12 +5177,7 @@ fn open_obsidian_note(
         }
         launch_target(target)
     } else {
-        launch_target(
-            PathBuf::from(vault.path)
-                .join(relative_path)
-                .to_string_lossy()
-                .to_string(),
-        )
+        launch_target(note_path.to_string_lossy().to_string())
     }
 }
 
@@ -4668,14 +5349,30 @@ fn set_todo_window_always_on_top(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
-fn pick_resource_input(app: tauri::AppHandle, mode: String) -> Result<Option<OrbitItemInput>, String> {
+fn pick_resource_input(
+    app: tauri::AppHandle,
+    mode: String,
+) -> Result<Option<OrbitItemInput>, String> {
     let picked = if mode == "folder" {
         pick_folder_path_dialog(&app)?
     } else {
         pick_file_path_dialog(
             &app,
             "Applications, shortcuts, scripts, files",
-            &["exe", "lnk", "msi", "appref-ms", "cmd", "bat", "ps1", "py", "js", "ts", "vbs", "ahk"],
+            &[
+                "exe",
+                "lnk",
+                "msi",
+                "appref-ms",
+                "cmd",
+                "bat",
+                "ps1",
+                "py",
+                "js",
+                "ts",
+                "vbs",
+                "ahk",
+            ],
         )?
     };
     Ok(picked.map(|path| item_input_from_dropped_path(&path)))
@@ -4834,8 +5531,9 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
         ],
     )
     .map_err(|error| format!("Failed to update item: {error}"))?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    get_item(&conn, &id)?.ok_or_else(|| "Item not found after update".to_string())
+    let updated = get_item(&conn, &id)?.ok_or_else(|| "Item not found after update".to_string())?;
+    let _ = app.emit("orbit://item-updated", updated.clone());
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -4843,9 +5541,9 @@ fn delete_item(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let conn = open_db()?;
     conn.execute("DELETE FROM trips WHERE item_id = ?1", params![&id])
         .map_err(|error| format!("Failed to cleanup trips: {error}"))?;
-    conn.execute("DELETE FROM items WHERE id = ?1", params![id])
+    conn.execute("DELETE FROM items WHERE id = ?1", params![&id])
         .map_err(|error| format!("Failed to delete item: {error}"))?;
-    let _ = app.emit("orbit://refresh-resources", ());
+    let _ = app.emit("orbit://item-deleted", ItemDeletedEvent { id });
     let _ = app.emit("orbit://trips-changed", ());
     Ok(())
 }
@@ -4945,7 +5643,13 @@ fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
     let mut cmd = ProcessCommand::new("powershell.exe");
     cmd.creation_flags(0x08000000);
     let output = cmd
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -5382,7 +6086,7 @@ mod shortcut_scan_tests {
     #[test]
     fn native_shortcut_scan_uses_cache_and_defers_icons() {
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        init_db(&mut conn).expect("in-memory database should initialize");
 
         let first_started = Instant::now();
         let first = scan_shortcuts_native_cached_with_conn(&mut conn)
@@ -5568,12 +6272,14 @@ fn update_global_hotkey(app: tauri::AppHandle, new_hotkey: String) -> Result<(),
 
         // 保存新配置到数据库
         set_setting_value(&conn, "global_hotkey", &new_hotkey)?;
+        cache_settings_from_connection(&app, &conn)?;
         Ok(())
     }
     #[cfg(not(desktop))]
     {
         let conn = open_db().map_err(|e| e.to_string())?;
         set_setting_value(&conn, "global_hotkey", &new_hotkey)?;
+        cache_settings_from_connection(&app, &conn)?;
         Ok(())
     }
 }
@@ -5848,7 +6554,7 @@ mod import_batch_tests {
     #[test]
     fn imports_five_hundred_items_in_one_transaction() {
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        init_db(&mut conn).expect("in-memory database should initialize");
         let inputs = (0..500).map(scanned_input).collect::<Vec<_>>();
         let started = Instant::now();
         let first = import_scanned_items_with_conn(&mut conn, inputs.clone())
@@ -5874,7 +6580,7 @@ mod import_batch_tests {
     #[test]
     fn skips_duplicate_targets_inside_a_batch() {
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        init_db(&mut conn).expect("in-memory database should initialize");
         let item = scanned_input(1);
         let result = import_scanned_items_with_conn(&mut conn, vec![item.clone(), item])
             .expect("duplicate batch import should succeed");
@@ -5917,7 +6623,7 @@ fn set_plugin_enabled(
 }
 
 #[tauri::command]
-fn set_active_theme(app: tauri::AppHandle, theme_id: String) -> Result<CatalogSnapshot, String> {
+fn set_active_theme(app: tauri::AppHandle, theme_id: String) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "active_theme_id", &theme_id)?;
     log_plugin_event(
@@ -5926,25 +6632,22 @@ fn set_active_theme(app: tauri::AppHandle, theme_id: String) -> Result<CatalogSn
         "info",
         &format!("Theme changed to {theme_id}"),
     )?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
-fn set_density(app: tauri::AppHandle, density: String) -> Result<CatalogSnapshot, String> {
+fn set_density(app: tauri::AppHandle, density: String) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "density", &density)?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
-fn set_close_behavior(app: tauri::AppHandle, behavior: String) -> Result<CatalogSnapshot, String> {
+fn set_close_behavior(app: tauri::AppHandle, behavior: String) -> Result<AppSettings, String> {
     let normalized = if behavior == "exit" { "exit" } else { "tray" };
     let conn = open_db()?;
     set_setting_value(&conn, "close_behavior", normalized)?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
@@ -5961,45 +6664,44 @@ fn set_safe_mode(app: tauri::AppHandle, enabled: bool) -> Result<CatalogSnapshot
             "Safe mode disabled"
         },
     )?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    snapshot_after_setting_update(&app)
 }
 
 #[tauri::command]
-fn set_auto_pinned_mode(app: tauri::AppHandle, enabled: bool) -> Result<CatalogSnapshot, String> {
+fn set_auto_pinned_mode(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(
         &conn,
         "auto_pinned_mode",
         if enabled { "true" } else { "false" },
     )?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
-fn set_display_mode(app: tauri::AppHandle, mode: String) -> Result<CatalogSnapshot, String> {
+fn set_display_mode(app: tauri::AppHandle, mode: String) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "display_mode", &mode)?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
-fn set_resource_mode(app: tauri::AppHandle, mode: String) -> Result<CatalogSnapshot, String> {
-    let normalized = if mode == "single" { "single" } else { "hierarchical" };
+fn set_resource_mode(app: tauri::AppHandle, mode: String) -> Result<AppSettings, String> {
+    let normalized = if mode == "single" {
+        "single"
+    } else {
+        "hierarchical"
+    };
     let conn = open_db()?;
     set_setting_value(&conn, "resource_mode", normalized)?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
-fn set_hotkey_behavior(app: tauri::AppHandle, behavior: String) -> Result<CatalogSnapshot, String> {
+fn set_hotkey_behavior(app: tauri::AppHandle, behavior: String) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "hotkey_behavior", &behavior)?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    settings_after_setting_update(&app, &conn)
 }
 
 #[tauri::command]
@@ -6340,6 +7042,8 @@ async fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<Impo
     let result = tauri::async_runtime::spawn_blocking(move || import_catalog_json_blocking(json))
         .await
         .map_err(|error| format!("Catalog import worker failed: {error}"))??;
+    let conn = open_db()?;
+    cache_settings_from_connection(&app, &conn)?;
     let _ = app.emit("orbit://refresh-resources", ());
     let _ = app.emit("orbit://trips-changed", ());
     Ok(result)
@@ -6385,7 +7089,7 @@ mod catalog_import_tests {
     #[test]
     fn restores_existing_resource_fields_groups_plugins_theme_and_trip_links() {
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        init_db(&mut conn).expect("in-memory database should initialize");
         let target = r#"C:\CatalogImport\tool.exe"#;
         let existing = insert_item(
             &conn,
@@ -6519,7 +7223,7 @@ mod catalog_import_tests {
         assert_eq!(parsed.items.len(), 1);
 
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
-        init_db(&conn).expect("in-memory database should initialize");
+        init_db(&mut conn).expect("in-memory database should initialize");
         import_catalog_export_with_conn(&mut conn, parsed).expect("legacy catalog should import");
         let recovered_group: i64 = conn
             .query_row(
@@ -6559,11 +7263,8 @@ fn ensure_local_templates() -> Result<(), String> {
         if !tips_plugin_root.exists() {
             fs::create_dir_all(&tips_plugin_root)
                 .map_err(|error| format!("Failed to create tips plugin: {error}"))?;
-            fs::write(
-                tips_plugin_root.join("plugin.json"),
-                tips_plugin_manifest(),
-            )
-            .map_err(|error| format!("Failed to write tips plugin manifest: {error}"))?;
+            fs::write(tips_plugin_root.join("plugin.json"), tips_plugin_manifest())
+                .map_err(|error| format!("Failed to write tips plugin manifest: {error}"))?;
             fs::write(tips_plugin_root.join("main.ts"), tips_plugin_source())
                 .map_err(|error| format!("Failed to write tips plugin source: {error}"))?;
             fs::write(
@@ -7162,15 +7863,10 @@ fn create_plugin_template(name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn reset_software() -> Result<(), String> {
-    // 1. 删除 SQLite 数据库文件
-    let db = db_path()?;
-    if db.exists() {
-        fs::remove_file(&db)
-            .map_err(|error| format!("Failed to delete database: {error}"))?;
-    }
-
-    // 2. 清空插件目录
+fn reset_software(app: tauri::AppHandle) -> Result<(), String> {
+    // Clear auxiliary directories before deleting the database. If either
+    // cleanup fails, the existing database remains usable instead of leaving
+    // the running app with its schema removed.
     let plugins = plugins_dir()?;
     if plugins.exists() {
         fs::remove_dir_all(&plugins)
@@ -7188,6 +7884,13 @@ fn reset_software() -> Result<(), String> {
             .map_err(|error| format!("Failed to recreate themes directory: {error}"))?;
     }
 
+    let db = db_path()?;
+    if db.exists() {
+        fs::remove_file(&db).map_err(|error| format!("Failed to delete database: {error}"))?;
+    }
+
+    let settings = initialize_database()?;
+    replace_cached_settings(&app, settings)?;
     Ok(())
 }
 
@@ -7394,11 +8097,8 @@ fn is_foreground_fullscreen_window() -> bool {
 
 #[cfg(all(desktop, target_os = "windows"))]
 fn bubble_should_avoid_fullscreen(app: &tauri::AppHandle) -> bool {
-    let settings_enabled = open_db()
-        .and_then(|conn| {
-            Ok(setting(&conn, "bubble_enabled", "false")? == "true"
-                && setting(&conn, "bubble_avoid_fullscreen", "false")? == "true")
-        })
+    let settings_enabled = cached_settings(app)
+        .map(|settings| settings.bubble_enabled && settings.bubble_avoid_fullscreen)
         .unwrap_or(false);
     if !settings_enabled || app.get_webview_window("floating-bubble").is_none() {
         return false;
@@ -7411,6 +8111,13 @@ fn bubble_should_avoid_fullscreen(app: &tauri::AppHandle) -> bool {
 
 #[cfg(all(desktop, target_os = "windows"))]
 fn activate_bubble_fullscreen_watcher(app: &tauri::AppHandle) {
+    if !cached_settings(app)
+        .map(|settings| settings.bubble_enabled && settings.bubble_avoid_fullscreen)
+        .unwrap_or(false)
+    {
+        return;
+    }
+
     let mut should_start = false;
     if let Ok(mut state) = bubble_fullscreen_state().lock() {
         state.app = Some(app.clone());
@@ -7440,42 +8147,69 @@ fn bubble_fullscreen_worker() {
             .ok()
             .and_then(|state| state.app.clone());
 
-        if let Some(app) = app {
-            let should_hide =
-                bubble_should_avoid_fullscreen(&app) && is_foreground_fullscreen_window();
-            if should_hide {
+        let Some(app) = app else {
+            let should_exit = bubble_fullscreen_state()
+                .lock()
+                .map(|mut state| {
+                    if state.app.is_none() {
+                        state.worker_started = false;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(true);
+            if should_exit {
+                return;
+            }
+            continue;
+        };
+
+        let should_hide = bubble_should_avoid_fullscreen(&app) && is_foreground_fullscreen_window();
+        if should_hide {
+            let hide_windows = bubble_fullscreen_state()
+                .lock()
+                .map(|mut state| {
+                    if state.hidden_for_fullscreen {
+                        false
+                    } else {
+                        state.hidden_for_fullscreen = true;
+                        true
+                    }
+                })
+                .unwrap_or(false);
+            if hide_windows {
                 if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
                     let _ = menu.hide();
                 }
                 if let Some(bubble) = app.get_webview_window("floating-bubble") {
                     let _ = bubble.hide();
                 }
-                if let Ok(mut state) = bubble_fullscreen_state().lock() {
-                    state.hidden_for_fullscreen = true;
-                }
-            } else {
-                let restore = bubble_fullscreen_state()
-                    .lock()
-                    .map(|mut state| {
-                        let restore =
-                            state.hidden_for_fullscreen && bubble_should_avoid_fullscreen(&app);
+            }
+        } else {
+            let restore = bubble_fullscreen_state()
+                .lock()
+                .map(|mut state| {
+                    if state.hidden_for_fullscreen {
                         state.hidden_for_fullscreen = false;
-                        restore
-                    })
-                    .unwrap_or(false);
-                if restore {
-                    let app_for_main = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        if let Some(bubble) = app_for_main.get_webview_window("floating-bubble") {
-                            let _ = bubble.show();
-                            let _ = bubble.unminimize();
-                            refresh_bubble_shapes(&app_for_main);
-                        }
-                    });
-                }
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if restore {
+                let app_for_main = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(bubble) = app_for_main.get_webview_window("floating-bubble") {
+                        let _ = bubble.show();
+                        let _ = bubble.unminimize();
+                        refresh_bubble_shapes(&app_for_main);
+                    }
+                });
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }
 
@@ -7507,12 +8241,9 @@ fn schedule_bubble_shape_refresh(app: &tauri::AppHandle) {
 }
 
 #[cfg(desktop)]
-fn is_bubble_enabled_and_show_on_hide() -> bool {
-    open_db()
-        .and_then(|conn| {
-            Ok(setting(&conn, "bubble_enabled", "false")? == "true"
-                && setting(&conn, "bubble_show_when_main_hidden", "true")? == "true")
-        })
+fn is_bubble_enabled_and_show_on_hide(app: &tauri::AppHandle) -> bool {
+    cached_settings(app)
+        .map(|settings| settings.bubble_enabled && settings.bubble_show_when_main_hidden)
         .unwrap_or(false)
 }
 
@@ -7530,12 +8261,9 @@ fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, 
         return Ok(bubble);
     }
 
-    let conn = open_db()?;
-    let always_on_top = setting(&conn, "bubble_always_on_top", "true")? == "true";
-    let size = setting(&conn, "bubble_size", "64")?
-        .parse::<f64>()
-        .unwrap_or(64.0)
-        .clamp(48.0, 96.0);
+    let settings = cached_settings(app)?;
+    let always_on_top = settings.bubble_always_on_top;
+    let size = (settings.bubble_size as f64).clamp(48.0, 96.0);
     // `WebviewUrl::App` accepts only an app-relative path. Passing a query
     // string here makes WebView2 resolve a non-existent `index.html?…` asset
     // and leaves the transparent bubble window on about:blank. The frontend
@@ -7563,8 +8291,7 @@ fn create_bubble_menu_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWin
         return Ok(menu);
     }
 
-    let conn = open_db()?;
-    let always_on_top = setting(&conn, "bubble_always_on_top", "true")? == "true";
+    let always_on_top = cached_settings(app)?.bubble_always_on_top;
     // See `create_bubble_window`: the window label, not a query string,
     // selects the bubble-menu UI.
     let url = WebviewUrl::App("index.html".into());
@@ -7639,15 +8366,15 @@ fn refresh_bubble_native_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
-fn close_behavior_setting() -> String {
-    open_db()
-        .and_then(|conn| setting(&conn, "close_behavior", "tray"))
+fn close_behavior_setting(app: &tauri::AppHandle) -> String {
+    cached_settings(app)
+        .map(|settings| settings.close_behavior)
         .unwrap_or_else(|_| "tray".to_string())
 }
 
 #[cfg(desktop)]
 fn hide_main_and_maybe_show_bubble(app: &tauri::AppHandle) -> Result<(), String> {
-    if is_bubble_enabled_and_show_on_hide() {
+    if is_bubble_enabled_and_show_on_hide(app) {
         if let Some(main) = app.get_webview_window("main") {
             main.hide()
                 .map_err(|error| format!("Failed to hide main window: {error}"))?;
@@ -7665,7 +8392,7 @@ fn hide_main_and_maybe_show_bubble(app: &tauri::AppHandle) -> Result<(), String>
 
 #[tauri::command]
 fn close_or_hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    if close_behavior_setting() == "exit" {
+    if close_behavior_setting(&app) == "exit" {
         app.exit(0);
         return Ok(());
     }
@@ -7800,8 +8527,10 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
                     // to the bubble while preserving room for a clean glow.
                     let logical_gap = 4.0;
                     let physical_gap = (logical_gap * scale_factor).round() as i32;
-                    let physical_menu_width = (BUBBLE_MENU_OUTER_WIDTH * scale_factor).round() as u32;
-                    let physical_menu_height = (BUBBLE_MENU_OUTER_HEIGHT * scale_factor).round() as u32;
+                    let physical_menu_width =
+                        (BUBBLE_MENU_OUTER_WIDTH * scale_factor).round() as u32;
+                    let physical_menu_height =
+                        (BUBBLE_MENU_OUTER_HEIGHT * scale_factor).round() as u32;
                     let physical_menu_bleed = (BUBBLE_MENU_BLEED * scale_factor).round() as i32;
 
                     let monitor_center_x = monitor_pos.x + (monitor_size.width as i32) / 2;
@@ -7816,9 +8545,11 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
                     let raw_menu_x = if is_left {
                         bubble_visual_right + physical_gap - physical_menu_bleed
                     } else {
-                        bubble_visual_left - physical_menu_width as i32 + physical_menu_bleed - physical_gap
+                        bubble_visual_left - physical_menu_width as i32 + physical_menu_bleed
+                            - physical_gap
                     };
-                    let min_x = monitor_pos.x + (10.0 * scale_factor).round() as i32 - physical_menu_bleed;
+                    let min_x =
+                        monitor_pos.x + (10.0 * scale_factor).round() as i32 - physical_menu_bleed;
                     let max_x = monitor_pos.x + monitor_size.width as i32
                         - (10.0 * scale_factor).round() as i32
                         - physical_menu_width as i32
@@ -7828,7 +8559,8 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
                     let bubble_center_y = bubble_pos.y + (bubble_size.height as i32) / 2;
                     let menu_y = bubble_center_y - (physical_menu_height as i32) / 2;
 
-                    let min_y = monitor_pos.y + (10.0 * scale_factor).round() as i32 - physical_menu_bleed;
+                    let min_y =
+                        monitor_pos.y + (10.0 * scale_factor).round() as i32 - physical_menu_bleed;
                     let max_y = monitor_pos.y + monitor_size.height as i32
                         - (10.0 * scale_factor).round() as i32
                         - physical_menu_height as i32
@@ -7864,11 +8596,12 @@ fn set_bubble_setting(
     app: tauri::AppHandle,
     key: String,
     value: String,
-) -> Result<CatalogSnapshot, String> {
+) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, &key, &value)?;
+    let settings = cache_settings_from_connection(&app, &conn)?;
 
-    if key == "bubble_enabled" && value != "true" {
+    if key == "bubble_enabled" && !settings.bubble_enabled {
         hide_bubble_window(&app);
     }
 
@@ -7895,25 +8628,29 @@ fn set_bubble_setting(
     }
 
     if key == "bubble_avoid_fullscreen" {
-        if value == "true" {
+        if settings.bubble_enabled && settings.bubble_avoid_fullscreen {
             activate_bubble_fullscreen_watcher(&app);
-        } else if let Some(bubble) = app.get_webview_window("floating-bubble") {
-            if app
-                .get_webview_window("main")
-                .and_then(|main| main.is_visible().ok())
-                .map(|visible| !visible)
-                .unwrap_or(false)
-            {
-                let _ = bubble.show();
-                let _ = bubble.unminimize();
+        } else {
+            deactivate_bubble_fullscreen_watcher();
+        }
+        if settings.bubble_enabled && !settings.bubble_avoid_fullscreen {
+            if let Some(bubble) = app.get_webview_window("floating-bubble") {
+                if app
+                    .get_webview_window("main")
+                    .and_then(|main| main.is_visible().ok())
+                    .map(|visible| !visible)
+                    .unwrap_or(false)
+                {
+                    let _ = bubble.show();
+                    let _ = bubble.unminimize();
+                }
             }
         }
     }
 
-    let snapshot = catalog_snapshot()?;
-    let _ = app.emit("orbit://bubble-settings-changed", snapshot.settings.clone());
-    let _ = app.emit("orbit://refresh-resources", ());
-    Ok(snapshot)
+    let _ = app.emit("orbit://bubble-settings-changed", settings.clone());
+    let _ = app.emit("orbit://settings-updated", settings.clone());
+    Ok(settings)
 }
 
 #[cfg(desktop)]
@@ -7923,8 +8660,8 @@ fn show_and_focus_main(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let behavior = open_db()
-            .and_then(|conn| setting(&conn, "hotkey_behavior", "command_bar"))
+        let behavior = cached_settings(app)
+            .map(|settings| settings.hotkey_behavior)
             .unwrap_or_else(|_| "command_bar".to_string());
         if behavior == "open_only" {
             let _ = window.emit("orbit://focus-search", ());
@@ -7948,7 +8685,7 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
             let _ = window.hide();
-            if is_bubble_enabled_and_show_on_hide() {
+            if is_bubble_enabled_and_show_on_hide(app) {
                 show_bubble_window_in_background(app.clone());
             } else {
                 hide_bubble_window(app);
@@ -7971,7 +8708,7 @@ fn handle_main_window_close(window: &tauri::Window, event: &WindowEvent) {
         return;
     };
     api.prevent_close();
-    if close_behavior_setting() == "exit" {
+    if close_behavior_setting(window.app_handle()) == "exit" {
         window.app_handle().exit(0);
     } else {
         if let Err(error) = hide_main_and_maybe_show_bubble(window.app_handle()) {
@@ -8004,9 +8741,7 @@ fn show_navigate_to_subtag(app: &tauri::AppHandle, subtag_path: &str) {
 
 #[cfg(desktop)]
 fn normalize_hotkey(hotkey: &str) -> String {
-    hotkey
-        .to_lowercase()
-        .replace("win", "super")
+    hotkey.to_lowercase().replace("win", "super")
 }
 
 #[cfg(desktop)]
@@ -8014,12 +8749,12 @@ fn handle_global_shortcut_press(
     app: &tauri::AppHandle,
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
 ) {
-    let main_hotkey_str = open_db()
-        .and_then(|conn| setting(&conn, "global_hotkey", "Ctrl+Alt+Space"))
+    let main_hotkey_str = cached_settings(app)
+        .map(|settings| settings.global_hotkey)
         .unwrap_or_else(|_| "Ctrl+Alt+Space".to_string());
 
-    let main_shortcut = normalize_hotkey(&main_hotkey_str)
-        .parse::<tauri_plugin_global_shortcut::Shortcut>();
+    let main_shortcut =
+        normalize_hotkey(&main_hotkey_str).parse::<tauri_plugin_global_shortcut::Shortcut>();
 
     if let Ok(main_sh) = main_shortcut {
         if shortcut == &main_sh {
@@ -8089,9 +8824,7 @@ fn handle_global_shortcut_press(
                                 .parse::<tauri_plugin_global_shortcut::Shortcut>()
                             {
                                 if shortcut == &sh {
-                                    if let Some(subtag_path) =
-                                        key.strip_prefix("hotkey_subtag:")
-                                    {
+                                    if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
                                         show_navigate_to_subtag(app, subtag_path);
                                         return;
                                     }
@@ -8110,8 +8843,8 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     // 从数据库中读取当前热键设置，如果没有，则默认使用 "Ctrl+Alt+Space"
-    let hotkey_str = open_db()
-        .and_then(|conn| setting(&conn, "global_hotkey", "Ctrl+Alt+Space"))
+    let hotkey_str = cached_settings(app.handle())
+        .map(|settings| settings.global_hotkey)
         .unwrap_or_else(|_| "Ctrl+Alt+Space".to_string());
     let hotkey_str = hotkey_str.to_lowercase();
 
@@ -8126,7 +8859,9 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
         eprintln!("Failed to register global shortcut plugin: {e}");
     } else {
         // 动态注册从数据库读取的快捷键
-        if let Ok(shortcut) = normalize_hotkey(&hotkey_str).parse::<tauri_plugin_global_shortcut::Shortcut>() {
+        if let Ok(shortcut) =
+            normalize_hotkey(&hotkey_str).parse::<tauri_plugin_global_shortcut::Shortcut>()
+        {
             if let Err(e) = app.global_shortcut().register(shortcut) {
                 eprintln!(
                     "Failed to register initial global shortcut '{}': {}",
@@ -8365,24 +9100,109 @@ fn check_path_exists(path: String) -> bool {
 
 #[tauri::command]
 fn check_url_accessible(url: String) -> bool {
-    use std::process::Command as ProcessCommand;
-    let script = format!("try {{ $r = Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 2; exit ($r.StatusCode -eq 200 -or $r.StatusCode -eq 302) ? 0 : 1 }} catch {{ exit 1 }}", url);
+    let Some(parsed) = parse_accessible_http_url(&url) else {
+        return false;
+    };
+
+    let mut cmd = build_url_check_command(&parsed);
+    match cmd.status() {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn build_url_check_command(url: &Url) -> ProcessCommand {
+    // Keep the command text constant and pass the user-controlled URL through the child
+    // environment. Interpolating it into `-Command` permits PowerShell injection.
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+try {
+  $response = Invoke-WebRequest -Uri $env:ORBITSTART_URL_TO_CHECK -UseBasicParsing -TimeoutSec 2
+  $status = [int]$response.StatusCode
+  if ($status -ge 200 -and $status -lt 400) { exit 0 }
+} catch {}
+exit 1
+"#;
     let mut cmd = ProcessCommand::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        &script,
-    ]);
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    cmd.env("ORBITSTART_URL_TO_CHECK", url.as_str());
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    match cmd.status() {
-        Ok(status) => status.success(),
-        Err(_) => false,
+    cmd
+}
+
+fn parse_accessible_http_url(value: &str) -> Option<Url> {
+    let parsed = Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(parsed)
+}
+
+#[cfg(test)]
+mod input_validation_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_plain_http_and_https_urls_for_accessibility_checks() {
+        assert!(parse_accessible_http_url("https://example.com/path?q=1").is_some());
+        assert!(parse_accessible_http_url("http://127.0.0.1:8080/health").is_some());
+        assert!(parse_accessible_http_url("file:///C:/Windows/System32").is_none());
+        assert!(parse_accessible_http_url("javascript:alert(1)").is_none());
+        assert!(parse_accessible_http_url("https://user:secret@example.com").is_none());
+        assert!(parse_accessible_http_url("https://example.com/' ; Write-Output pwned").is_some());
+    }
+
+    #[test]
+    fn keeps_url_payload_out_of_the_powershell_command_text_and_arguments() {
+        let payload = "https://example.com/'%3BWrite-Output-pwned";
+        let url = parse_accessible_http_url(payload).expect("payload is a valid URL");
+        let command = build_url_check_command(&url);
+        assert!(
+            command
+                .get_args()
+                .all(|argument| !argument.to_string_lossy().contains(payload)),
+            "untrusted URL must not be an argument to PowerShell -Command"
+        );
+        let target = command.get_envs().find_map(|(key, value)| {
+            (key.to_string_lossy() == "ORBITSTART_URL_TO_CHECK")
+                .then(|| value.map(|value| value.to_string_lossy().into_owned()))
+                .flatten()
+        });
+        assert_eq!(target.as_deref(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn normalizes_note_paths_without_allowing_vault_escapes() {
+        assert_eq!(
+            normalize_obsidian_note_relative_path("notes\\daily.md")
+                .expect("path should normalize"),
+            "notes/daily.md"
+        );
+        assert_eq!(
+            normalize_obsidian_note_relative_path("./notes/daily.md")
+                .expect("path should normalize"),
+            "notes/daily.md"
+        );
+        for path in [
+            "../outside.md",
+            "notes/../../outside.md",
+            "/outside.md",
+            "C:/outside.md",
+            "\\\\server\\share\\outside.md",
+        ] {
+            assert!(
+                normalize_obsidian_note_relative_path(path).is_err(),
+                "{path} must not be accepted as a vault-relative note path"
+            );
+        }
     }
 }
 
@@ -8776,6 +9596,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log_frontend_error,
             catalog_snapshot,
+            window_appearance,
             create_item,
             reorder_items,
             reorder_groups,
@@ -8865,16 +9686,26 @@ pub fn run() {
             update_workspace_hotkey
         ])
         .setup(|app| {
-            let _ = open_db();
+            let settings = initialize_database().map_err(std::io::Error::other)?;
+            app.manage(AppState {
+                settings: RwLock::new(settings),
+            });
             #[cfg(desktop)]
             setup_global_shortcut(app)?;
             #[cfg(desktop)]
             setup_tray(app)?;
             #[cfg(desktop)]
             {
-                let _ = app
+                if let Err(error) = app
                     .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build());
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    let message = format!("Updater plugin initialization failed: {error}");
+                    eprintln!("{message}");
+                    if let Err(log_error) = log_plugin_event_raw("updater", "error", &message) {
+                        eprintln!("Failed to persist updater initialization error: {log_error}");
+                    }
+                }
                 let _ = app.handle().plugin(tauri_plugin_process::init());
                 let _ = app.handle().plugin(tauri_plugin_dialog::init());
                 let _ =
@@ -8976,7 +9807,6 @@ mod tests {
                 GetWindowThreadProcessId(hwnd, &mut pid);
 
                 let h_process = OpenProcess(0x1000, 0, pid);
-                let mut exe_path = "unknown".to_string();
                 let mut process_name = "unknown.exe".to_string();
                 if !h_process.is_null() {
                     let mut path_buf = [0u16; 1024];
@@ -8984,7 +9814,7 @@ mod tests {
                     if QueryFullProcessImageNameW(h_process, 0, path_buf.as_mut_ptr(), &mut size)
                         != 0
                     {
-                        exe_path = String::from_utf16_lossy(&path_buf[..size as usize]);
+                        let exe_path = String::from_utf16_lossy(&path_buf[..size as usize]);
                         if let Some(f) = std::path::Path::new(&exe_path).file_name() {
                             process_name = f.to_string_lossy().into_owned();
                         }

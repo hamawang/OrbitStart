@@ -2,6 +2,7 @@ import { phase0Snapshot } from "../data/catalog";
 import type {
   ExportResult,
   ImportResult,
+  AppSettings,
   ObsidianNoteIndex,
   ObsidianScanResult,
   ObsidianSearchResult,
@@ -17,6 +18,8 @@ import type {
   TripUpdateInput
 } from "../types";
 
+export type WindowAppearance = Pick<Phase0Snapshot, "settings" | "themes">;
+
 const storageKey = "orbitstart.browser.items";
 const snapshotKey = "orbitstart.browser.snapshot";
 const tripsKey = "orbitstart.browser.trips";
@@ -24,13 +27,72 @@ const obsidianVaultsKey = "orbitstart.browser.obsidian.vaults";
 const obsidianNotesKey = "orbitstart.browser.obsidian.notes";
 const obsidianTasksKey = "orbitstart.browser.obsidian.tasks";
 
-async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, args);
+type TauriInternals = {
+  invoke?: unknown;
+};
+
+export class NativeCommandError extends Error {
+  readonly command: string;
+  readonly cause?: unknown;
+
+  constructor(command: string, cause?: unknown) {
+    super(`Native command "${command}" failed${cause === undefined ? "" : `: ${describeError(cause)}`}`);
+    this.name = "NativeCommandError";
+    this.command = command;
+    this.cause = cause;
+  }
 }
 
-function hasNativeBridge(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    try {
+      return String(error);
+    } catch {
+      return "Unknown native error";
+    }
+  }
+}
+
+export function hasNativeBridge(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const internals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+    return typeof internals?.invoke === "function";
+  } catch {
+    return false;
+  }
+}
+
+async function logNativeCommandFailure(command: string, cause: unknown): Promise<void> {
+  if (command === "log_frontend_error" || !hasNativeBridge()) return;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<void>("log_frontend_error", {
+      message: `Native command "${command}" failed: ${describeError(cause)}`
+    });
+  } catch {
+    // Logging must not mask the original command failure or recursively log itself.
+  }
+}
+
+async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!hasNativeBridge()) {
+    throw new NativeCommandError(command, new Error("Tauri native bridge is unavailable"));
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<T>(command, args);
+  } catch (cause) {
+    const error = cause instanceof NativeCommandError ? cause : new NativeCommandError(command, cause);
+    await logNativeCommandFailure(command, error.cause);
+    throw error;
+  }
 }
 
 function readBrowserItems(): OrbitItem[] {
@@ -179,15 +241,30 @@ function createBrowserItem(input: OrbitItemInput): OrbitItem {
 export async function loadSnapshot(): Promise<Phase0Snapshot> {
   try {
     return await invokeNative<Phase0Snapshot>("catalog_snapshot");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return readBrowserSnapshot();
+  }
+}
+
+export async function loadWindowAppearance(): Promise<WindowAppearance> {
+  try {
+    return await invokeNative<WindowAppearance>("window_appearance");
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const snapshot = readBrowserSnapshot();
+    return {
+      settings: snapshot.settings,
+      themes: snapshot.themes
+    };
   }
 }
 
 export async function createItem(input: OrbitItemInput): Promise<OrbitItem> {
   try {
     return await invokeNative<OrbitItem>("create_item", { input });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const items = readBrowserItems();
     const item = createBrowserItem(input);
     writeBrowserItems([item, ...items]);
@@ -282,7 +359,8 @@ export async function pickIconImage(): Promise<string | null> {
 export async function createGroup(title: string): Promise<Phase0Snapshot["groups"]> {
   try {
     return await invokeNative<Phase0Snapshot["groups"]>("create_group", { title });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const id = `group-${Date.now()}`;
     const nextGroups = [
@@ -313,7 +391,8 @@ export async function createCustomGroup(
       icon,
       description
     });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const nextGroups = [
       ...snapshot.groups.filter((g) => g.id !== id),
@@ -333,7 +412,8 @@ export async function createCustomGroup(
 export async function deleteGroup(id: string): Promise<Phase0Snapshot["groups"]> {
   try {
     return await invokeNative<Phase0Snapshot["groups"]>("delete_group", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const nextGroups = snapshot.groups.filter((group) => group.id !== id);
     const fallbackGroupForKind = (kind: string) => {
@@ -359,7 +439,8 @@ export async function deleteGroup(id: string): Promise<Phase0Snapshot["groups"]>
 export async function updateItem(item: OrbitItem): Promise<OrbitItem> {
   try {
     return await invokeNative<OrbitItem>("update_item", { item });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const items = readBrowserItems().map((candidate) => (candidate.id === item.id ? item : candidate));
     writeBrowserItems(items);
     return item;
@@ -369,7 +450,8 @@ export async function updateItem(item: OrbitItem): Promise<OrbitItem> {
 export async function deleteItem(id: string): Promise<void> {
   try {
     await invokeNative<void>("delete_item", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     writeBrowserItems(readBrowserItems().filter((item) => item.id !== id));
     writeBrowserTrips(readBrowserTrips().filter((trip) => trip.itemId !== id));
   }
@@ -378,7 +460,8 @@ export async function deleteItem(id: string): Promise<void> {
 export async function listTrips(itemId: string): Promise<Trip[]> {
   try {
     return await invokeNative<Trip[]>("list_trips", { itemId });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return sortTrips(readBrowserTrips().filter((trip) => trip.itemId === itemId));
   }
 }
@@ -387,7 +470,8 @@ export async function createTrip(input: TripInput): Promise<Trip> {
   const normalized = normalizeTripInput(input);
   try {
     return await invokeNative<Trip>("create_trip", normalized);
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const now = Math.floor(Date.now() / 1000);
     const trip: Trip = {
       id: `trip-${input.itemId}-${Date.now()}`,
@@ -411,7 +495,8 @@ export async function updateTrip(id: string, updates: TripUpdateInput): Promise<
   const normalized = normalizeTripInput(updates);
   try {
     return await invokeNative<Trip>("update_trip", { id, ...normalized });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const trips = readBrowserTrips();
     const next = trips.map((trip) => (
       trip.id === id
@@ -432,7 +517,8 @@ export async function updateTrip(id: string, updates: TripUpdateInput): Promise<
 export async function markTripViewed(id: string): Promise<void> {
   try {
     await invokeNative<void>("mark_trip_viewed", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const now = Math.floor(Date.now() / 1000);
     writeBrowserTrips(readBrowserTrips().map((trip) => (trip.id === id ? { ...trip, lastViewedAt: now } : trip)));
   }
@@ -441,7 +527,8 @@ export async function markTripViewed(id: string): Promise<void> {
 export async function deleteTrip(id: string): Promise<void> {
   try {
     await invokeNative<void>("delete_trip", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     writeBrowserTrips(readBrowserTrips().filter((trip) => trip.id !== id));
   }
 }
@@ -449,7 +536,8 @@ export async function deleteTrip(id: string): Promise<void> {
 export async function searchTrips(query: string): Promise<TripSearchResult[]> {
   try {
     return await invokeNative<TripSearchResult[]>("search_trips", { query });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const q = query.trim().toLowerCase();
     const items = readBrowserItems();
     const itemById = new Map(items.map((item) => [item.id, item]));
@@ -475,7 +563,8 @@ export async function searchTrips(query: string): Promise<TripSearchResult[]> {
 export async function tripCountForItems(itemIds: string[]): Promise<Record<string, number>> {
   try {
     return await invokeNative<Record<string, number>>("trip_count_for_items", { itemIds });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const counts: Record<string, number> = {};
     for (const itemId of itemIds) counts[itemId] = 0;
     for (const trip of readBrowserTrips()) {
@@ -488,7 +577,8 @@ export async function tripCountForItems(itemIds: string[]): Promise<Record<strin
 export async function pickObsidianVaultPath(): Promise<string | null> {
   try {
     return await invokeNative<string | null>("pick_obsidian_vault_path");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return null;
   }
 }
@@ -496,7 +586,8 @@ export async function pickObsidianVaultPath(): Promise<string | null> {
 export async function listObsidianVaults(): Promise<ObsidianVaultConfig[]> {
   try {
     return await invokeNative<ObsidianVaultConfig[]>("list_obsidian_vaults");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return readBrowserObsidianVaults();
   }
 }
@@ -504,7 +595,8 @@ export async function listObsidianVaults(): Promise<ObsidianVaultConfig[]> {
 export async function addObsidianVault(path: string, name?: string): Promise<ObsidianVaultConfig> {
   try {
     return await invokeNative<ObsidianVaultConfig>("add_obsidian_vault", { path, name });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const now = `${Math.floor(Date.now() / 1000)}`;
     const cleanPath = path.trim();
     const vault: ObsidianVaultConfig = {
@@ -527,7 +619,8 @@ export async function addObsidianVault(path: string, name?: string): Promise<Obs
 export async function removeObsidianVault(id: string): Promise<void> {
   try {
     await invokeNative<void>("remove_obsidian_vault", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     writeBrowserObsidianVaults(readBrowserObsidianVaults().filter((vault) => vault.id !== id));
     writeBrowserObsidianNotes(readBrowserObsidianNotes().filter((note) => note.vaultId !== id));
     writeBrowserObsidianTasks(readBrowserObsidianTasks().filter((task) => task.vaultId !== id));
@@ -537,7 +630,8 @@ export async function removeObsidianVault(id: string): Promise<void> {
 export async function scanObsidianVault(vaultId: string): Promise<ObsidianScanResult> {
   try {
     return await invokeNative<ObsidianScanResult>("scan_obsidian_vault", { vaultId });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const vaults = readBrowserObsidianVaults();
     const vault = vaults.find((candidate) => candidate.id === vaultId);
     if (!vault) throw new Error(`Obsidian vault not found: ${vaultId}`);
@@ -559,7 +653,8 @@ export async function listObsidianTasks(options: { includeCompleted?: boolean; q
       includeCompleted: options.includeCompleted ?? false,
       query: options.query ?? ""
     });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const q = (options.query ?? "").trim().toLowerCase();
     return sortObsidianTasks(
       readBrowserObsidianTasks()
@@ -578,7 +673,8 @@ export async function listObsidianNotes(options: { vaultId?: string; query?: str
       vaultId: options.vaultId ?? null,
       query: options.query ?? ""
     });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const q = (options.query ?? "").trim().toLowerCase();
     const vaultId = options.vaultId && options.vaultId !== "all" ? options.vaultId : "";
     return sortObsidianNotes(
@@ -595,7 +691,8 @@ export async function listObsidianNotes(options: { vaultId?: string; query?: str
 export async function toggleObsidianNoteFavorite(id: string, favorite: boolean): Promise<void> {
   try {
     await invokeNative<void>("toggle_obsidian_note_favorite", { id, favorite });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     writeBrowserObsidianNotes(
       readBrowserObsidianNotes().map((note) => (note.id === id ? { ...note, favorite } : note))
     );
@@ -605,7 +702,8 @@ export async function toggleObsidianNoteFavorite(id: string, favorite: boolean):
 export async function listObsidianNoteTasks(noteId: string): Promise<ObsidianTask[]> {
   try {
     return await invokeNative<ObsidianTask[]>("list_obsidian_note_tasks", { noteId });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return readBrowserObsidianTasks()
       .filter((task) => task.noteId === noteId)
       .sort((a, b) => a.lineNumber - b.lineNumber);
@@ -615,7 +713,8 @@ export async function listObsidianNoteTasks(noteId: string): Promise<ObsidianTas
 export async function openObsidianTodoWindow(noteId: string): Promise<void> {
   try {
     await invokeNative<void>("open_obsidian_todo_window", { noteId });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     window.open(`?panel=todo&noteId=${encodeURIComponent(noteId)}`, "orbitstart-todo-panel", "width=520,height=720,resizable=yes");
   }
 }
@@ -623,7 +722,8 @@ export async function openObsidianTodoWindow(noteId: string): Promise<void> {
 export async function setTodoWindowAlwaysOnTop(enabled: boolean): Promise<void> {
   try {
     await invokeNative<void>("set_todo_window_always_on_top", { enabled });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     void enabled;
   }
 }
@@ -635,7 +735,8 @@ export async function toggleObsidianTaskCompletion(taskId: string): Promise<Obsi
 export async function searchObsidian(query: string): Promise<ObsidianSearchResult[]> {
   try {
     return await invokeNative<ObsidianSearchResult[]>("search_obsidian", { query });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return (await listObsidianTasks({ query })).slice(0, 25).map((task) => ({
       kind: "task",
       id: task.id,
@@ -654,7 +755,8 @@ export async function searchObsidian(query: string): Promise<ObsidianSearchResul
 export async function openObsidianNote(vaultId: string, relativePath: string, lineNumber?: number | null): Promise<string> {
   try {
     return await invokeNative<string>("open_obsidian_note", { vaultId, relativePath, lineNumber });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return `本地预览模式：已模拟打开 Obsidian 笔记 ${relativePath}${lineNumber ? `:${lineNumber}` : ""}`;
   }
 }
@@ -662,7 +764,8 @@ export async function openObsidianNote(vaultId: string, relativePath: string, li
 export async function launchItem(id: string, target: string): Promise<string> {
   try {
     return await invokeNative<string>("launch_item", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return `本地预览模式：已模拟启动 ${target}`;
   }
 }
@@ -670,7 +773,8 @@ export async function launchItem(id: string, target: string): Promise<string> {
 export async function launchTarget(target: string): Promise<string> {
   try {
     return await invokeNative<string>("launch_target", { target });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return `本地预览模式：已模拟启动 ${target}`;
   }
 }
@@ -678,7 +782,8 @@ export async function launchTarget(target: string): Promise<string> {
 export async function revealTarget(target: string): Promise<string> {
   try {
     return await invokeNative<string>("reveal_target", { target });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return `本地预览模式：已模拟打开所在位置 ${target}`;
   }
 }
@@ -704,7 +809,8 @@ export async function scanBrowserBookmarks(): Promise<OrbitItem[]> {
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<Phase0Snapshot> {
   try {
     return await invokeNative<Phase0Snapshot>("set_plugin_enabled", { id, enabled });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
@@ -718,7 +824,8 @@ export async function setPluginEnabled(id: string, enabled: boolean): Promise<Ph
 export async function readPluginRuntime(id: string): Promise<PluginRuntimeSource | null> {
   try {
     return await invokeNative<PluginRuntimeSource | null>("read_plugin_runtime", { id });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return null;
   }
 }
@@ -732,52 +839,56 @@ export async function recordPluginRuntimeEvent(pluginId: string, level: "info" |
   }
 }
 
-export async function setActiveTheme(themeId: string): Promise<Phase0Snapshot> {
+export async function setActiveTheme(themeId: string): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_active_theme", { themeId });
-  } catch {
+    return await invokeNative<AppSettings>("set_active_theme", { themeId });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, activeThemeId: themeId }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
-export async function setDensity(density: string): Promise<Phase0Snapshot> {
+export async function setDensity(density: string): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_density", { density });
-  } catch {
+    return await invokeNative<AppSettings>("set_density", { density });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, density }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
-export async function setCloseBehavior(closeBehavior: "tray" | "exit"): Promise<Phase0Snapshot> {
+export async function setCloseBehavior(closeBehavior: "tray" | "exit"): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_close_behavior", { behavior: closeBehavior });
-  } catch {
+    return await invokeNative<AppSettings>("set_close_behavior", { behavior: closeBehavior });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, closeBehavior }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
 export async function setSafeMode(enabled: boolean): Promise<Phase0Snapshot> {
   try {
     return await invokeNative<Phase0Snapshot>("set_safe_mode", { enabled });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
@@ -788,66 +899,71 @@ export async function setSafeMode(enabled: boolean): Promise<Phase0Snapshot> {
   }
 }
 
-export async function setAutoPinnedMode(enabled: boolean): Promise<Phase0Snapshot> {
+export async function setAutoPinnedMode(enabled: boolean): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_auto_pinned_mode", { enabled });
-  } catch {
+    return await invokeNative<AppSettings>("set_auto_pinned_mode", { enabled });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, autoPinnedMode: enabled }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
-export async function setDisplayMode(mode: "simple" | "detailed"): Promise<Phase0Snapshot> {
+export async function setDisplayMode(mode: "simple" | "detailed"): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_display_mode", { mode });
-  } catch {
+    return await invokeNative<AppSettings>("set_display_mode", { mode });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, displayMode: mode }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
-export async function setResourceMode(mode: "hierarchical" | "single"): Promise<Phase0Snapshot> {
+export async function setResourceMode(mode: "hierarchical" | "single"): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_resource_mode", { mode });
-  } catch {
+    return await invokeNative<AppSettings>("set_resource_mode", { mode });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, resourceMode: mode }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
-export async function setHotkeyBehavior(behavior: "command_bar" | "open_only"): Promise<Phase0Snapshot> {
+export async function setHotkeyBehavior(behavior: "command_bar" | "open_only"): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_hotkey_behavior", { behavior });
-  } catch {
+    return await invokeNative<AppSettings>("set_hotkey_behavior", { behavior });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, hotkeyBehavior: behavior }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 
 export async function exportCatalogJson(): Promise<ExportResult> {
   try {
     return await invokeNative<ExportResult>("export_catalog_json");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const exportedAt = `${Date.now()}`;
     const snapshot = readBrowserSnapshot();
     const json = JSON.stringify({ version: 2, exportedAt, items: snapshot.items, plugins: snapshot.plugins, activeThemeId: snapshot.settings.activeThemeId }, null, 2);
@@ -877,7 +993,8 @@ export async function importCatalogJson(json: string): Promise<ImportResult> {
 export async function createPluginTemplate(name: string): Promise<string> {
   try {
     return await invokeNative<string>("create_plugin_template", { name });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return `local-preview/plugins/${name}`;
   }
 }
@@ -885,7 +1002,8 @@ export async function createPluginTemplate(name: string): Promise<string> {
 export async function openDataDirectory(): Promise<string> {
   try {
     return await invokeNative<string>("open_data_directory");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return "local-preview";
   }
 }
@@ -893,7 +1011,8 @@ export async function openDataDirectory(): Promise<string> {
 export async function resetSoftware(): Promise<void> {
   try {
     await invokeNative<void>("reset_software");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     window.localStorage.clear();
   }
 }
@@ -901,7 +1020,8 @@ export async function resetSoftware(): Promise<void> {
 export async function openAuxWindow(panel: "settings" | "plugins" | "themes" | "about"): Promise<void> {
   try {
     await invokeNative<void>("open_aux_window", { panel });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     window.location.hash = panel === "settings" ? "settings" : `settings-${panel}`;
   }
 }
@@ -909,7 +1029,8 @@ export async function openAuxWindow(panel: "settings" | "plugins" | "themes" | "
 export async function getAutostartEnabled(): Promise<boolean> {
   try {
     return await invokeNative<boolean>("get_autostart_enabled");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     return false;
   }
 }
@@ -917,7 +1038,8 @@ export async function getAutostartEnabled(): Promise<boolean> {
 export async function setAutostartEnabled(enabled: boolean): Promise<void> {
   try {
     await invokeNative<void>("set_autostart_enabled", { enabled });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     // 浏览器预览静默失败
   }
 }
@@ -926,6 +1048,7 @@ export async function updateGlobalHotkey(oldHotkey: string, newHotkey: string): 
   try {
     await invokeNative<void>("update_global_hotkey", { newHotkey });
   } catch (e) {
+    if (hasNativeBridge()) throw e;
     console.warn("Failed to update global hotkey natively, fallback to browser state update", e);
     const snapshot = readBrowserSnapshot();
     const next = {
@@ -1035,6 +1158,7 @@ export async function hydrateShortcutIcons(itemIds: string[]): Promise<number> {
   try {
     return await invokeNative<number>("hydrate_shortcut_icons", { itemIds });
   } catch (error) {
+    if (hasNativeBridge()) throw error;
     console.warn("Failed to hydrate shortcut icons", error);
     return 0;
   }
@@ -1043,7 +1167,8 @@ export async function hydrateShortcutIcons(itemIds: string[]): Promise<number> {
 export async function reorderItems(orderedIds: string[]): Promise<void> {
   try {
     await invokeNative<void>("reorder_items", { orderedIds });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const items = readBrowserItems();
     const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
     const reordered = [...items].sort((a, b) => {
@@ -1058,7 +1183,8 @@ export async function reorderItems(orderedIds: string[]): Promise<void> {
 export async function reorderGroups(orderedIds: string[]): Promise<Phase0Snapshot["groups"]> {
   try {
     return await invokeNative<Phase0Snapshot["groups"]>("reorder_groups", { orderedIds });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
     const reordered = [...snapshot.groups].sort((a, b) => {
@@ -1074,7 +1200,8 @@ export async function reorderGroups(orderedIds: string[]): Promise<Phase0Snapsho
 export async function getGroupHotkeys(): Promise<Record<string, string>> {
   try {
     return await invokeNative<Record<string, string>>("get_group_hotkeys");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const raw = window.localStorage.getItem("orbitstart.browser.group_hotkeys");
     return raw ? JSON.parse(raw) : {};
   }
@@ -1083,7 +1210,8 @@ export async function getGroupHotkeys(): Promise<Record<string, string>> {
 export async function updateGroupHotkey(groupId: string, hotkey: string | null): Promise<void> {
   try {
     await invokeNative<void>("update_group_hotkey", { groupId, newHotkey: hotkey });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const raw = window.localStorage.getItem("orbitstart.browser.group_hotkeys");
     const map = raw ? JSON.parse(raw) : {};
     if (hotkey) {
@@ -1098,7 +1226,8 @@ export async function updateGroupHotkey(groupId: string, hotkey: string | null):
 export async function getSubTagHotkeys(): Promise<Record<string, string>> {
   try {
     return await invokeNative<Record<string, string>>("get_subtag_hotkeys");
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const raw = window.localStorage.getItem("orbitstart.browser.subtag_hotkeys");
     return raw ? JSON.parse(raw) : {};
   }
@@ -1107,7 +1236,8 @@ export async function getSubTagHotkeys(): Promise<Record<string, string>> {
 export async function updateSubTagHotkey(subtagPath: string, hotkey: string | null): Promise<void> {
   try {
     await invokeNative<void>("update_subtag_hotkey", { subtagPath, newHotkey: hotkey });
-  } catch {
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const raw = window.localStorage.getItem("orbitstart.browser.subtag_hotkeys");
     const map = raw ? JSON.parse(raw) : {};
     if (hotkey) {
@@ -1120,10 +1250,11 @@ export async function updateSubTagHotkey(subtagPath: string, hotkey: string | nu
 }
 
 
-export async function setBubbleSetting(key: string, value: string): Promise<Phase0Snapshot> {
+export async function setBubbleSetting(key: string, value: string): Promise<AppSettings> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_bubble_setting", { key, value });
-  } catch {
+    return await invokeNative<AppSettings>("set_bubble_setting", { key, value });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
     const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
     const parsedValue = value === "true" ? true : value === "false" ? false : isNaN(Number(value)) ? value : Number(value);
@@ -1132,7 +1263,7 @@ export async function setBubbleSetting(key: string, value: string): Promise<Phas
       settings: { ...snapshot.settings, [camelKey]: parsedValue }
     };
     writeBrowserSnapshot(next);
-    return next;
+    return next.settings;
   }
 }
 

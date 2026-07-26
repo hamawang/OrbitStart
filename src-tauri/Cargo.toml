@@ -1,6 +1,6 @@
 [package]
 name = "orbitstart"
-version = "0.8.1"
+version = "0.8.2"
 description = "OrbitStart plugin-driven Windows launcher"
 authors = ["OrbitStart contributors"]
 edition = "2021"
@@ -11,7 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 lnk = "0.5"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }

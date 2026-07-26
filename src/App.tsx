@@ -57,7 +57,7 @@ import {
   GripVertical
 } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, closestCenter, pointerWithin, rectIntersection, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -112,8 +112,7 @@ class SmartTouchSensor extends TouchSensor {
 }
 
 import { LocalGalaxyBackdrop } from "./components/LocalGalaxyBackdrop";
-import { TripPanel } from "./components/TripPanel";
-import { Workspaces } from "./components/Workspaces/Workspaces";
+import { APP_VERSION } from "./appVersion";
 import {
   contextMenuFromEvent,
   copyText,
@@ -125,13 +124,13 @@ import {
 import { installDesktopShell } from "./desktop/desktopShell";
 import { closeWindow, getAppWindow, minimizeWindow, startWindowResize, toggleMaximizeWindow } from "./desktop/windowControls";
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
+import { removeItemById, upsertItemById, upsertItemsById } from "./lib/catalogState";
 import { tripCategoryLabels } from "./lib/tripTemplates";
 import {
   shouldShowOnboarding,
   completeOnboarding,
   skipOnboarding
 } from "./lib/onboarding";
-import { OnboardingWizard } from "./components/OnboardingWizard";
 import {
   addObsidianVault,
   createItem,
@@ -147,6 +146,7 @@ import {
   listObsidianNotes,
   listObsidianTasks,
   listObsidianVaults,
+  loadWindowAppearance,
   loadSnapshot,
   openObsidianNote,
   openObsidianTodoWindow,
@@ -192,7 +192,6 @@ import {
   launchTarget,
   setBubbleSetting
 } from "./lib/native";
-import { FloatingBubble, FloatingBubbleMenu } from "./components/FloatingBubble/FloatingBubble";
 import { createOrbitPluginHost } from "./plugin/api";
 import { localGalaxyAssets } from "./theme/localGalaxyAssets";
 import type {
@@ -216,6 +215,27 @@ import type { ScenarioTag, ScenarioGroup } from "./lib/onboarding";
 const appIconSrc = new URL("../design/app-icons/orbitstart-first-icon-ui.png", import.meta.url).href;
 const RESOURCE_RENDER_PAGE_SIZE = 120;
 const IMPORT_PREVIEW_PAGE_SIZE = 100;
+
+const Workspaces = lazy(async () => {
+  const module = await import("./components/Workspaces/Workspaces");
+  return { default: module.Workspaces };
+});
+const TripPanel = lazy(async () => {
+  const module = await import("./components/TripPanel");
+  return { default: module.TripPanel };
+});
+const OnboardingWizard = lazy(async () => {
+  const module = await import("./components/OnboardingWizard");
+  return { default: module.OnboardingWizard };
+});
+const FloatingBubble = lazy(async () => {
+  const module = await import("./components/FloatingBubble/FloatingBubble");
+  return { default: module.FloatingBubble };
+});
+const FloatingBubbleMenu = lazy(async () => {
+  const module = await import("./components/FloatingBubble/FloatingBubble");
+  return { default: module.FloatingBubbleMenu };
+});
 
 const tripStatusLabels: Record<string, string> = {
   todo: "待处理",
@@ -1208,30 +1228,49 @@ function SortableResourceRow({
   );
 }
 
-function useBubbleWindowSettings() {
+function useBubbleWindowAppearance() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [themes, setThemes] = useState<ThemeManifest[]>([]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    loadSnapshot()
-      .then((snap) => setSettings(snap.settings))
+    let disposed = false;
+    const disposers: Array<() => void> = [];
+    loadWindowAppearance()
+      .then((appearance) => {
+        setSettings(appearance.settings);
+        setThemes(appearance.themes);
+      })
       .catch(console.error);
 
     if (!isTauriRuntime()) return;
-    listen<AppSettings>("orbit://bubble-settings-changed", (event) => {
-      setSettings(event.payload);
-    }).then((dispose) => {
-      unlisten = dispose;
-    }).catch(console.error);
+    void Promise.all([
+      listen<AppSettings>("orbit://bubble-settings-changed", (event) => {
+        setSettings(event.payload);
+      }),
+      listen<AppSettings>("orbit://settings-updated", (event) => {
+        setSettings(event.payload);
+      })
+    ])
+      .then((nextDisposers) => {
+        if (disposed) {
+          nextDisposers.forEach((dispose) => dispose());
+        } else {
+          disposers.push(...nextDisposers);
+        }
+      })
+      .catch(console.error);
 
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      disposers.splice(0).forEach((dispose) => dispose());
+    };
   }, []);
 
-  return [settings, setSettings] as const;
+  return [settings, themes] as const;
 }
 
 function FloatingBubbleWrapper() {
-  const [settings] = useBubbleWindowSettings();
+  const [settings, themes] = useBubbleWindowAppearance();
 
   useEffect(() => {
     document.body.classList.add("bubble-body");
@@ -1240,11 +1279,6 @@ function FloatingBubbleWrapper() {
       document.body.classList.remove("bubble-body");
       document.documentElement.classList.remove("bubble-html");
     };
-  }, []);
-
-  const [themes, setThemes] = useState<ThemeManifest[]>([]);
-  useEffect(() => {
-    loadSnapshot().then((snap) => setThemes(snap.themes)).catch(console.error);
   }, []);
 
   const activeTheme = useMemo(() => {
@@ -1263,11 +1297,15 @@ function FloatingBubbleWrapper() {
     Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
   }, [activeTheme]);
 
-  return <FloatingBubble settings={settings} />;
+  return (
+    <Suspense fallback={null}>
+      <FloatingBubble settings={settings} />
+    </Suspense>
+  );
 }
 
 function FloatingBubbleMenuWrapper() {
-  const [settings] = useBubbleWindowSettings();
+  const [settings, themes] = useBubbleWindowAppearance();
 
   useEffect(() => {
     document.body.classList.add("bubble-body");
@@ -1276,11 +1314,6 @@ function FloatingBubbleMenuWrapper() {
       document.body.classList.remove("bubble-body");
       document.documentElement.classList.remove("bubble-html");
     };
-  }, []);
-
-  const [themes, setThemes] = useState<ThemeManifest[]>([]);
-  useEffect(() => {
-    loadSnapshot().then((snap) => setThemes(snap.themes)).catch(console.error);
   }, []);
 
   const activeTheme = useMemo(() => {
@@ -1299,7 +1332,11 @@ function FloatingBubbleMenuWrapper() {
     Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
   }, [activeTheme]);
 
-  return <FloatingBubbleMenu settings={settings} />;
+  return (
+    <Suspense fallback={null}>
+      <FloatingBubbleMenu settings={settings} />
+    </Suspense>
+  );
 }
 
 function getWindowLabelFromUrl(): string | null {
@@ -1786,7 +1823,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         });
       } else {
         if (manual) {
-          setToast("当前已是最新版本 (v0.7.5)");
+          setToast(`当前已是最新版本 (v${APP_VERSION})`);
         }
       }
     } catch (err) {
@@ -1850,7 +1887,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   useEffect(() => {
     if (isTauriRuntime()) {
-      void getAutostartEnabled().then(setAutostartState);
+      void getAutostartEnabled()
+        .then(setAutostartState)
+        .catch((error) => {
+          console.error("Failed to read autostart state:", error);
+          setToast(`无法读取开机启动状态：${String(error)}`);
+        });
     }
   }, []);
 
@@ -2042,7 +2084,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         if (activeItem && (activeItem.subTag || "") !== targetSubTag) {
           setBusy(true);
           updateItem({ ...activeItem, subTag: targetSubTag })
-            .then(() => reload())
+            .then((updated) => applyItemUpdate(updated))
             .catch((err) => setToast(`移动失败: ${String(err)}`))
             .finally(() => setBusy(false));
         }
@@ -2057,7 +2099,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
       const targetSubTag = overItem.subTag || "";
       setBusy(true);
       updateItem({ ...activeItem, subTag: targetSubTag })
-        .then(() => reload())
+        .then((updated) => applyItemUpdate(updated))
         .catch((err) => setToast(`移动失败: ${String(err)}`))
         .finally(() => setBusy(false));
       return;
@@ -2111,6 +2153,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setLogs(snapshot.logs);
   }
 
+  function applyItemUpdate(item: OrbitItem) {
+    setItems((previous) => upsertItemById(previous, item));
+  }
+
+  function applyItemDeletion(id: string) {
+    setItems((previous) => removeItemById(previous, id));
+    setTripCounts((previous) => {
+      if (!(id in previous)) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+  }
+
   async function reload() {
     const snapshot = await loadSnapshot();
     applySnapshot(snapshot);
@@ -2158,6 +2214,32 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   useEffect(() => {
     reload().catch((error) => setToast(`加载失败：${String(error)}`));
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    const disposers: Array<() => void> = [];
+
+    void Promise.all([
+      listen<OrbitItem>("orbit://item-created", (event) => applyItemUpdate(event.payload)),
+      listen<OrbitItem>("orbit://item-updated", (event) => applyItemUpdate(event.payload)),
+      listen<{ id: string }>("orbit://item-deleted", (event) => applyItemDeletion(event.payload.id)),
+      listen<AppSettings>("orbit://settings-updated", (event) => setSettings(event.payload))
+    ])
+      .then((nextDisposers) => {
+        if (disposed) {
+          nextDisposers.forEach((dispose) => dispose());
+        } else {
+          disposers.push(...nextDisposers);
+        }
+      })
+      .catch((error) => console.error("Failed to subscribe to catalog item events", error));
+
+    return () => {
+      disposed = true;
+      disposers.splice(0).forEach((dispose) => dispose());
+    };
   }, []);
 
   useEffect(() => {
@@ -2964,18 +3046,19 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
     setBusy(true);
     try {
+      let saved: OrbitItem;
       if (editor.mode === "create") {
-        await createItem(normalizedInput);
+        saved = await createItem(normalizedInput);
         setToast(`已添加：${normalizedInput.title}`);
       } else {
-        await updateItem({
+        saved = await updateItem({
           ...editor.item,
           ...normalizedInput
         });
         setToast(`已更新：${normalizedInput.title}`);
       }
+      applyItemUpdate(saved);
       setEditor(null);
-      await reload();
     } catch (error) {
       setToast(`保存失败：${String(error)}`);
     } finally {
@@ -2992,7 +3075,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setBusy(true);
     try {
       const created = await createItemsFromPaths(cleanPaths, destinationGroup);
-      await reload();
+      setItems((previous) => upsertItemsById(previous, created));
       setActiveView("dashboard");
       if (destinationGroup) {
         setActiveGroup(destinationGroup);
@@ -3067,9 +3150,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setBusy(true);
     try {
       await deleteItem(item.id);
+      applyItemDeletion(item.id);
       setToast(`已删除：${item.title}`);
       setDialog(null);
-      await reload();
     } catch (error) {
       setToast(`删除失败：${String(error)}`);
     } finally {
@@ -3193,11 +3276,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function toggleFavorite(item: OrbitItem) {
     setBusy(true);
     try {
-      await updateItem({
+      const updated = await updateItem({
         ...item,
         favorite: !item.favorite
       });
-      await reload();
+      applyItemUpdate(updated);
     } catch (error) {
       setToast(`更新收藏失败：${String(error)}`);
     } finally {
@@ -3609,8 +3692,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function changeTheme(themeId: string) {
     setBusy(true);
     try {
-      const snapshot = await setActiveTheme(themeId);
-      applySnapshot(snapshot);
+      const nextSettings = await setActiveTheme(themeId);
+      setSettings(nextSettings);
       setToast(`已应用主题：${themeId}`);
     } catch (error) {
       setToast(`主题切换失败：${String(error)}`);
@@ -3622,8 +3705,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function changeDensity(next: "comfortable" | "compact" | string) {
     setBusy(true);
     try {
-      const snapshot = await setDensity(next);
-      applySnapshot(snapshot);
+      const nextSettings = await setDensity(next);
+      setSettings(nextSettings);
       setToast(`密度已切换`);
     } catch (error) {
       setToast(`密度切换失败：${String(error)}`);
@@ -3638,13 +3721,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
       if (timer) clearTimeout(timer);
       timer = setTimeout(async () => {
         try {
-          const snapshot = await setDensity(value);
-          setItems(snapshot.items);
-          setGroups(snapshot.groups);
-          setCommands(snapshot.commands);
-          setPlugins(snapshot.plugins);
-          setThemes(snapshot.themes);
-          setSettings((prev) => prev ? { ...snapshot.settings, density: prev.density } : snapshot.settings);
+          const nextSettings = await setDensity(value);
+          setSettings((prev) => prev ? { ...nextSettings, density: prev.density } : nextSettings);
         } catch (error) {
           console.error("Failed to persist density:", error);
         }
@@ -3663,8 +3741,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function changeDisplayMode(mode: "simple" | "detailed") {
     setBusy(true);
     try {
-      const snapshot = await setDisplayMode(mode);
-      applySnapshot(snapshot);
+      const nextSettings = await setDisplayMode(mode);
+      setSettings(nextSettings);
       setToast(`显示模式已应用：${mode === "simple" ? "简约模式" : "详细模式"}`);
     } catch (error) {
       setToast(`显示模式切换失败：${String(error)}`);
@@ -3676,8 +3754,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function changeCloseBehavior(next: "tray" | "exit") {
     setBusy(true);
     try {
-      const snapshot = await setCloseBehavior(next);
-      applySnapshot(snapshot);
+      const nextSettings = await setCloseBehavior(next);
+      setSettings(nextSettings);
       setToast(next === "tray" ? "关闭按钮已设置为隐藏到托盘" : "关闭按钮已设置为直接退出");
     } catch (error) {
       setToast(`关闭行为更新失败：${String(error)}`);
@@ -3689,8 +3767,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function changeHotkeyBehavior(next: "command_bar" | "open_only") {
     setBusy(true);
     try {
-      const snapshot = await setHotkeyBehavior(next);
-      applySnapshot(snapshot);
+      const nextSettings = await setHotkeyBehavior(next);
+      setSettings(nextSettings);
       setToast(next === "command_bar" ? "全局热键已设置为打开 Command Bar" : "全局热键已设置为单纯打开主窗口并聚焦");
     } catch (error) {
       setToast(`热键行为更新失败：${String(error)}`);
@@ -3722,8 +3800,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setBusy(true);
     try {
       const next = !settings?.autoPinnedMode;
-      const snapshot = await setAutoPinnedMode(next);
-      applySnapshot(snapshot);
+      const nextSettings = await setAutoPinnedMode(next);
+      setSettings(nextSettings);
       setToast(next ? "自动置顶模式已启用：启动资源后自动移动至最前" : "自动置顶模式已关闭");
     } catch (error) {
       setToast(`置顶模式更新失败：${String(error)}`);
@@ -4114,15 +4192,22 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   async function persistWorkbenchSetting(key: string, value: boolean) {
     const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) as keyof AppSettings;
+    const previousSettings = settings;
+    const previousHideWorkbench = hideWorkbench;
     if (key === "workbench_visible") {
       setHideWorkbench(!value);
       localStorage.setItem("orbitstart.dashboard.hide_workbench", String(!value));
     }
     setSettings((prev) => prev ? ({ ...prev, [camelKey]: value } as AppSettings) : prev);
     try {
-      const snapshot = await setBubbleSetting(key, value ? "true" : "false");
-      setSettings(snapshot.settings);
+      const nextSettings = await setBubbleSetting(key, value ? "true" : "false");
+      setSettings(nextSettings);
     } catch (error) {
+      setSettings(previousSettings);
+      if (key === "workbench_visible") {
+        setHideWorkbench(previousHideWorkbench);
+        localStorage.setItem("orbitstart.dashboard.hide_workbench", String(previousHideWorkbench));
+      }
       setToast(`工作台设置保存失败：${String(error)}`);
     }
   }
@@ -4319,7 +4404,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
     setBusy(true);
     try {
-      await createItem({
+      const created = await createItem({
         title: note.title,
         subtitle: `${note.vaultName} · ${note.relativePath}`,
         kind: "file",
@@ -4331,7 +4416,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         accent: "#8b7cf6",
         favorite: note.favorite
       });
-      await reload();
+      applyItemUpdate(created);
       setToast(`已加入资源中心：${note.title}`);
     } catch (error) {
       setToast(`加入资源中心失败：${String(error)}`);
@@ -5324,12 +5409,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
     };
 
     const persistBubbleSetting = async (key: string, value: string) => {
+      const previousSettings = settings;
       patchBubbleSetting(key, value);
       try {
-        const snapshot = await setBubbleSetting(key, value);
-        setSettings(snapshot.settings);
-        return snapshot;
+        const nextSettings = await setBubbleSetting(key, value);
+        setSettings(nextSettings);
+        return nextSettings;
       } catch (error) {
+        setSettings(previousSettings);
         setToast(`悬浮球设置保存失败：${String(error)}`);
         return null;
       }
@@ -5551,7 +5638,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.8.1</strong>版本</span>
+          <span><strong>{APP_VERSION}</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -5627,7 +5714,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button type="button" className="secondary-action compact-action" onClick={() => setActiveView("obsidian")}>
                   查看
                 </button>
-                <button type="button" className="secondary-action compact-action" onClick={() => void scanObsidianVault(vault.id).then(() => refreshObsidian())} disabled={busy}>
+                <button
+                  type="button"
+                  className="secondary-action compact-action"
+                  onClick={() => void scanObsidianVault(vault.id)
+                    .then(() => refreshObsidian())
+                    .catch((error) => {
+                      console.error("Failed to scan Obsidian vault:", error);
+                      setToast(`Vault 扫描失败：${String(error)}`);
+                    })}
+                  disabled={busy}
+                >
                   扫描
                 </button>
                 <button type="button" className="secondary-action compact-action danger-soft" onClick={() => void deleteObsidianVault(vault)} disabled={busy}>
@@ -6515,12 +6612,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
         setToast(`成功处理 ${result.imported} 个资源（新增 ${result.inserted}，更新 ${result.updated}）${skippedCopy}`);
         handleClose();
         if (kind === "shortcuts" && result.itemIds.length > 0) {
-          void hydrateShortcutIcons(result.itemIds).then(async (updated) => {
-            if (updated > 0) {
-              await reload();
-              setToast(`资源导入完成，已在后台补全 ${updated} 个程序图标`);
-            }
-          });
+          void hydrateShortcutIcons(result.itemIds)
+            .then(async (updated) => {
+              if (updated > 0) {
+                await reload();
+                setToast(`资源导入完成，已在后台补全 ${updated} 个程序图标`);
+              }
+            })
+            .catch((error) => {
+              console.error("Failed to hydrate shortcut icons:", error);
+              setToast(`快捷方式图标提取失败：${String(error)}`);
+            });
         }
       } catch (error) {
         setToast(`导入失败：${String(error)}`);
@@ -6778,7 +6880,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   return (
     <>
       {showOnboarding && (
-        <OnboardingWizard
+        <Suspense fallback={null}>
+          <OnboardingWizard
           visible={!importPreview}
           onTemplateSelected={async (tags, groups) => {
             // Resolve current Windows username to replace [user] placeholders in template paths
@@ -6861,7 +6964,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
             setShowOnboarding(false);
             setToast("欢迎使用 OrbitStart！按 Ctrl+K 随时唤起命令面板");
           }}
-        />
+          />
+        </Suspense>
       )}
       <main className={`app-shell density-${density} view-${activeView}`} style={appShellStyle} onContextMenu={handleAppContextMenu}>
       {isLocalGalaxyTheme && (
@@ -7001,7 +7105,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
         {activeView === "dashboard" && renderDashboard()}
         {activeView === "trips" && tripsFeatureEnabled && renderTripsPage()}
         {activeView === "obsidian" && obsidianFeatureEnabled && renderObsidianPage()}
-        {activeView === "workspaces" && workspacesFeatureEnabled && <Workspaces pluginHost={pluginHost} items={items} />}
+        {activeView === "workspaces" && workspacesFeatureEnabled && (
+          <Suspense fallback={null}>
+            <Workspaces pluginHost={pluginHost} items={items} />
+          </Suspense>
+        )}
         {activeView === "settings" && renderSettings()}
         {activeView === "logs" && renderLogs()}
       </section>
@@ -7025,7 +7133,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
       {dialog && renderAppDialog()}
 
       {tripsFeatureEnabled && tripPanelItem && (
-        <TripPanel
+        <Suspense fallback={null}>
+          <TripPanel
           item={tripPanelItem}
           highlightTripId={tripPanelHighlightId}
           onClose={() => {
@@ -7033,7 +7142,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
             setTripPanelHighlightId(null);
           }}
           onChanged={handleTripsChanged}
-        />
+          />
+        </Suspense>
       )}
 
       {paletteOpen && (
