@@ -16,6 +16,9 @@ src-tauri/**/*.pdb
 # Locally built installers and update artifacts
 release-artifacts/
 
+# Local release signing material (never commit)
+release-secrets-local/
+
 # Raw or audit-only asset staging folders
 graph/
 design/graph/

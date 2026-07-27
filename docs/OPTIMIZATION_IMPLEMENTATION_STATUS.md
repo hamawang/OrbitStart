@@ -77,9 +77,9 @@
 
 ### 0.8.3 打包状态
 
-- 已在隔离 `CARGO_TARGET_DIR` 中完成无 bundle 桌面构建，并生成本地手动安装包 `release-artifacts/OrbitStart_0.8.3_x64-setup.exe`；ProductVersion 与 FileVersion 均为 0.8.3，SHA-256 记录在同目录 `.sha256` 文件。
-- 该安装包未进行 Authenticode 或 updater 签名，且没有 `.sig` 与 0.8.3 `latest.json`；它只能用于手动安装，不能发布为自动更新资产。
-- 正式签名发布只剩受保护的 release signing key 与口令不可供当前构建进程读取。隔离构建目录已经绕开运行中旧实例对默认输出路径的锁定；但实际安装和人工升级验收前仍应正常退出旧实例。签名凭据可用后，执行签名构建、生成清单并运行 `release:verify` 即可完成。
+- 已在隔离 `CARGO_TARGET_DIR` 中完成签名桌面构建，正式资产位于 `release-artifacts/signed-0.8.3/`：NSIS 安装包、同名 updater `.sig` 与 `latest.json` 均已生成；ProductVersion 与 FileVersion 均为 0.8.3，SHA-256 记录在同目录 `.sha256` 文件。
+- 独立 `verify_updater_signature` 已使用 `tauri.conf.json` 的公钥完成 minisign 验签；`release:verify` 已验证版本、签名文件名和更新清单 URL 一致。
+- Tauri updater 签名不是 Windows Authenticode 签名。GitHub Release 附件尚未上传，且应在上传前完成覆盖安装与更新检查的人工验收；隔离构建目录已绕开运行中旧实例对默认输出路径的锁定。
 
 ## 性能测量边界
 

@@ -16,13 +16,12 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ## 签名与更新清单
 
 - [ ] 仅从受保护的密钥位置读取 TAURI_SIGNING_PRIVATE_KEY 和口令；密钥或口令不写入仓库、日志或 Release。
-- [ ] 关闭正在运行的 OrbitStart 后执行 npm.cmd run tauri:build -- --ci。
-- [ ] 确认 NSIS 安装包和同名 .sig 均由本次构建生成。
-- [ ] 使用 tools/create-updater-manifest.mjs 从该安装包和同名 .sig 生成 latest.json，不复制旧签名。
-- [ ] 执行 npm.cmd run release:verify -- --expect-version <version>。
+- [ ] 将私钥、口令和 `.pub` 保存于 Git 忽略的 `release-secrets-local/`，并保留加密备份；确认 `.pub` 的 Base64 文本与 `tauri.conf.json` 的 updater 公钥完全一致，不能再次编码。
+- [ ] 执行 `powershell -ExecutionPolicy Bypass -File tools/build-signed-release.ps1`；脚本会隔离 Cargo 目标目录，因此不受运行中默认 release 输出锁定影响。
+- [ ] 确认 `release-artifacts/signed-<version>/` 中的 NSIS 安装包、同名 `.sig` 和 `latest.json` 均由本次脚本生成；脚本必须先通过独立 minisign 验签和 release 校验。
 - [ ] 上传安装包、同名 .sig 和 latest.json 到 GitHub Release v<version>。
 - [ ] 不将 `--no-sign` 或 `createUpdaterArtifacts: false` 生成的手动安装包作为 GitHub Release 或自动更新资产。
-- [ ] 若私钥无法恢复，不直接替换线上 updater 公钥；先制定并验证一次手动安装的信任迁移方案。
+- [ ] 若需要轮换 updater 公钥，先记录迁移原因、更新公告和手动安装路径；不要期望旧版本自动验证新密钥。
 
 ## Windows 人工验收
 
