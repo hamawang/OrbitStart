@@ -1,6 +1,12 @@
 import { openObsidianNote, readPluginRuntime, recordPluginRuntimeEvent, searchObsidian, searchTrips } from "../lib/native";
 import type { OrbitPluginManifest, SearchResult } from "../types";
 import type { PluginContext, RegisteredCommand } from "./api";
+import {
+  capabilityRisk,
+  requiredCapabilityForHostRequest,
+  resolvePluginCapabilities,
+  type PluginCapabilityId
+} from "./capabilities";
 
 type WorkerRuntimeMessage =
   | { type: "response"; requestId: string; ok: true; result?: unknown }
@@ -85,16 +91,39 @@ function sendResponse(requestId, ok, result, error) {
     : { type: "response", requestId, ok: false, error });
 }
 
-function installRuntimeGuards() {
-  if (!hasPermission("net:fetch") && !hasPermission("network:fetch")) {
-    self.fetch = () => Promise.reject(new Error("Network access is not enabled for this plugin"));
-    self.WebSocket = function WebSocketBlocked() {
-      throw new Error("WebSocket access is not enabled for this plugin");
-    };
-  }
-  self.importScripts = () => {
-    throw new Error("importScripts is disabled in OrbitStart plugin workers");
+function denyRuntimeApi(name) {
+  return function runtimeApiBlocked() {
+    throw new Error(name + " is disabled in OrbitStart plugin workers");
   };
+}
+
+function lockRuntimeApi(name, replacement) {
+  try {
+    Object.defineProperty(self, name, {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: replacement
+    });
+  } catch (_) {
+    // WebView implementations can expose a non-configurable inherited API.
+    // The host still rejects every privileged bridge request below.
+    try { self[name] = replacement; } catch (_) {}
+  }
+}
+
+function installRuntimeGuards() {
+  // Plugins use explicit host APIs for probes. Direct network and script
+  // loading stay unavailable even when a plugin receives network:probe.
+  lockRuntimeApi("fetch", () => Promise.reject(new Error("fetch is disabled in OrbitStart plugin workers")));
+  lockRuntimeApi("WebSocket", denyRuntimeApi("WebSocket"));
+  lockRuntimeApi("EventSource", denyRuntimeApi("EventSource"));
+  lockRuntimeApi("XMLHttpRequest", denyRuntimeApi("XMLHttpRequest"));
+  lockRuntimeApi("importScripts", denyRuntimeApi("importScripts"));
+  // A plugin must never discover a generic Tauri bridge from its worker. The
+  // host owns native calls and exposes only the request allowlist below.
+  lockRuntimeApi("__TAURI__", undefined);
+  lockRuntimeApi("__TAURI_INTERNALS__", undefined);
 }
 
 function createPluginContext() {
@@ -236,8 +265,10 @@ async function activatePlugin(payload) {
 
   const ctx = createPluginContext();
   const exports = {};
-  const factory = new Function("__orbit_exports", payload.source + "\nreturn __orbit_exports.default;");
-  activePlugin = factory(exports);
+  if (typeof __orbit_plugin_factory !== "function") {
+    throw new Error("Plugin worker factory is unavailable");
+  }
+  activePlugin = __orbit_plugin_factory(exports);
   if (!activePlugin || typeof activePlugin.activate !== "function") {
     throw new Error("Plugin default export must provide activate(ctx)");
   }
@@ -325,13 +356,10 @@ self.onmessage = (event) => {
 };
 `;
 
-let workerUrl: string | null = null;
-
-function getWorkerUrl() {
-  if (!workerUrl) {
-    workerUrl = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
-  }
-  return workerUrl;
+function createWorkerUrl(pluginFactorySource: string) {
+  return URL.createObjectURL(
+    new Blob([WORKER_BOOTSTRAP, "\n", pluginFactorySource], { type: "text/javascript" })
+  );
 }
 
 function toErrorMessage(error: unknown) {
@@ -343,13 +371,30 @@ function preparePluginSource(source: string, entry: string) {
   if (/^\s*import\s+(?!type\b)/m.test(next)) {
     throw new Error("Plugin runtime does not support static imports yet. Bundle the plugin or keep main.ts self-contained.");
   }
+  if (/\bimport\s*\(/.test(next)) {
+    throw new Error("Plugin runtime does not support dynamic imports. Keep main.ts self-contained.");
+  }
+  if (/\bimportScripts\s*\(/.test(next)) {
+    throw new Error("Plugin runtime cannot load additional scripts with importScripts().");
+  }
   next = next
     .replace(/^\s*export\s+\{\s*\};?\s*$/gm, "")
     .replace(/\s+satisfies\s+OrbitPlugin\b/g, "")
     .replace(/:\s*OrbitPlugin\b/g, "")
     .replace(/:\s*OrbitPluginContext\b/g, "")
     .replace(/export\s+default\s+/g, "__orbit_exports.default = ");
-  return `${next}\n//# sourceURL=orbit-plugin://${entry}`;
+  // `sourceURL` is only a debugging aid. Keep it on one line so a malicious
+  // runtime manifest cannot append code that executes while the worker loads,
+  // before `installRuntimeGuards()` has run.
+  const safeEntryLabel = String(entry).replace(/[\r\n\u2028\u2029]/g, "_");
+  return [
+    "function __orbit_plugin_factory(__orbit_exports) {",
+    '"use strict";',
+    next,
+    "return __orbit_exports.default;",
+    "}",
+    `//# sourceURL=orbit-plugin://${safeEntryLabel}`
+  ].join("\n");
 }
 
 function scopedStoragePrefix(pluginId: string, namespace: "settings" | "storage") {
@@ -374,18 +419,20 @@ function readJsonValue(raw: string | null, fallbackValue: unknown) {
 
 export class WorkerPluginRuntime {
   private worker: Worker | null = null;
+  private workerUrl: string | null = null;
   private disposed = false;
   private requestSeq = 0;
   private commandDisposers = new Map<string, () => void>();
   private providerDisposers = new Map<string, () => void>();
   private pending = new Map<string, PendingRequest>();
-  private permissionIds: Set<string>;
+  private permissionIds = new Set<PluginCapabilityId>();
+  private readonly manifestPermissionIds: string[];
 
   constructor(
     private readonly plugin: OrbitPluginManifest,
     private readonly ctx: PluginContext
   ) {
-    this.permissionIds = new Set(plugin.permissions.map((permission) => permission.id));
+    this.manifestPermissionIds = plugin.permissions.map((permission) => permission.id);
   }
 
   async start() {
@@ -397,8 +444,27 @@ export class WorkerPluginRuntime {
         return;
       }
 
+      const capabilityResolution = resolvePluginCapabilities(this.manifestPermissionIds, runtime.permissions);
+      this.permissionIds = capabilityResolution.granted;
+      if (capabilityResolution.rejected.length > 0) {
+        await this.log(
+          "warn",
+          `Denied undeclared or unsupported plugin capabilities: ${capabilityResolution.rejected.join(", ")}`
+        );
+      }
+      const elevatedCapabilities = Array.from(this.permissionIds).filter(
+        (capability) => ["high", "critical"].includes(capabilityRisk(capability))
+      );
+      if (elevatedCapabilities.length > 0) {
+        await this.log(
+          "warn",
+          `Plugin enabled with elevated capabilities: ${elevatedCapabilities.join(", ")}`
+        );
+      }
+
       const source = preparePluginSource(runtime.source, runtime.entry);
-      this.worker = new Worker(getWorkerUrl(), { name: `OrbitStart:${this.plugin.id}` });
+      this.workerUrl = createWorkerUrl(source);
+      this.worker = new Worker(this.workerUrl, { name: `OrbitStart:${this.plugin.id}` });
       this.worker.onmessage = (event) => void this.handleMessage(event.data as WorkerRuntimeMessage);
       this.worker.onerror = (event) => {
         void this.log("error", event.message || "Plugin worker crashed.");
@@ -407,8 +473,7 @@ export class WorkerPluginRuntime {
         "activate",
         {
           plugin: this.plugin,
-          permissions: runtime.permissions,
-          source
+          permissions: Array.from(this.permissionIds)
         },
         8000
       );
@@ -433,9 +498,14 @@ export class WorkerPluginRuntime {
   }
 
   private terminate() {
-    if (!this.worker) return;
-    this.worker.terminate();
-    this.worker = null;
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    if (this.workerUrl) {
+      URL.revokeObjectURL(this.workerUrl);
+      this.workerUrl = null;
+    }
     for (const pending of this.pending.values()) {
       window.clearTimeout(pending.timer);
       pending.reject(new Error("Plugin worker stopped."));
@@ -468,7 +538,7 @@ export class WorkerPluginRuntime {
     }
 
     if (message.type === "register-command") {
-      this.registerCommand(message.command);
+      await this.registerCommand(message.command);
       return;
     }
     if (message.type === "unregister-command") {
@@ -477,7 +547,7 @@ export class WorkerPluginRuntime {
       return;
     }
     if (message.type === "register-search-provider") {
-      this.registerSearchProvider(message.id);
+      await this.registerSearchProvider(message.id);
       return;
     }
     if (message.type === "unregister-search-provider") {
@@ -502,7 +572,19 @@ export class WorkerPluginRuntime {
     }
   }
 
-  private registerCommand(command: SerializableCommand) {
+  private async registerCommand(command: SerializableCommand) {
+    if (!command || typeof command.id !== "string") {
+      await this.log("warn", "Blocked malformed command registration from plugin worker.");
+      return;
+    }
+    if (!this.isOwnedContributionId(command.id)) {
+      await this.log("warn", `Blocked command registration outside plugin namespace: ${String(command.id)}`);
+      return;
+    }
+    if (!this.commandDisposers.has(command.id) && this.commandDisposers.size >= this.contributionLimit("commands")) {
+      await this.log("warn", `Blocked command registration above manifest limit: ${command.id}`);
+      return;
+    }
     if (this.commandDisposers.has(command.id)) {
       this.commandDisposers.get(command.id)?.();
     }
@@ -516,7 +598,19 @@ export class WorkerPluginRuntime {
     this.commandDisposers.set(command.id, dispose);
   }
 
-  private registerSearchProvider(providerId: string) {
+  private async registerSearchProvider(providerId: string) {
+    if (typeof providerId !== "string") {
+      await this.log("warn", "Blocked malformed search provider registration from plugin worker.");
+      return;
+    }
+    if (!this.isOwnedContributionId(providerId)) {
+      await this.log("warn", `Blocked search provider registration outside plugin namespace: ${String(providerId)}`);
+      return;
+    }
+    if (!this.providerDisposers.has(providerId) && this.providerDisposers.size >= this.contributionLimit("searchProviders")) {
+      await this.log("warn", `Blocked search provider registration above manifest limit: ${providerId}`);
+      return;
+    }
     if (this.providerDisposers.has(providerId)) {
       this.providerDisposers.get(providerId)?.();
     }
@@ -556,12 +650,8 @@ export class WorkerPluginRuntime {
   }
 
   private async resolveHostRequest(api: string, payload: Record<string, unknown>) {
-    if (api.startsWith("storage:")) this.requirePermission("storage:plugin");
-    if (api.startsWith("settings:")) this.requirePermission("settings:plugin");
-    if (api.startsWith("trips:")) this.requirePermission("trips:read");
-    if (api.startsWith("obsidian:")) this.requirePermission("obsidian:read");
-    if (api.startsWith("catalog:")) this.requirePermission("catalog:read");
-    if (api.startsWith("launcher:")) this.requirePermission("shell:open");
+    if (typeof api !== "string") throw new Error("Plugin host API name must be a string");
+    this.requirePermission(requiredCapabilityForHostRequest(api, payload));
 
     if (api === "storage:get") return this.readScopedValue("storage", payload.key, payload.fallbackValue);
     if (api === "storage:set") return this.writeScopedValue("storage", payload.key, payload.value);
@@ -606,8 +696,16 @@ export class WorkerPluginRuntime {
     }
     if (api === "launcher:run_script") {
       const scriptType = String(payload.scriptType ?? "");
-      const path = payload.path ? String(payload.path) : null;
-      const content = payload.content ? String(payload.content) : null;
+      // Mirror the capability resolver exactly: a non-empty string path means
+      // a script file, while every non-null inline value (including "") is
+      // inline content. This avoids silently changing the mode after it has
+      // been permission-checked.
+      const path = typeof payload.path === "string" && payload.path.trim()
+        ? payload.path
+        : null;
+      const content = payload.content === null || payload.content === undefined
+        ? null
+        : String(payload.content);
       return import("@tauri-apps/api/core").then(({ invoke }) => invoke("run_script", { scriptType, path, content }));
     }
     if (api === "launcher:check_process_running") {
@@ -662,11 +760,20 @@ export class WorkerPluginRuntime {
     return entries;
   }
 
-  private hasPermission(permission: string) {
+  private isOwnedContributionId(id: unknown) {
+    return typeof id === "string" && id.startsWith(`${this.plugin.id}.`);
+  }
+
+  private contributionLimit(kind: "commands" | "searchProviders") {
+    const rawLimit = this.plugin.contributes?.[kind];
+    return Number.isFinite(rawLimit) ? Math.max(0, Math.floor(rawLimit)) : 0;
+  }
+
+  private hasPermission(permission: PluginCapabilityId) {
     return this.permissionIds.has(permission);
   }
 
-  private requirePermission(permission: string) {
+  private requirePermission(permission: PluginCapabilityId) {
     if (!this.hasPermission(permission)) throw new Error(`Permission denied: ${permission}`);
   }
 

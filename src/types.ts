@@ -1,4 +1,6 @@
 export type ItemKind = "app" | "file" | "folder" | "website" | "script" | "action_chain";
+export type ResourcePathMode = "absolute" | "data-relative" | "workspace-relative";
+export type ResourcePathStatus = "available" | "missing" | "permission-denied" | "network-unavailable" | "invalid";
 
 export interface OrbitItem {
   id: string;
@@ -17,6 +19,8 @@ export interface OrbitItem {
   launchCount: number;
   lastLaunchedAt?: string;
   sortOrder?: number;
+  pathMode?: ResourcePathMode;
+  basePath?: string;
 }
 
 export interface OrbitItemInput {
@@ -32,6 +36,17 @@ export interface OrbitItemInput {
   icon: string;
   accent: string;
   favorite: boolean;
+  pathMode?: ResourcePathMode;
+  basePath?: string;
+}
+
+export interface ResourcePathStatusReport {
+  pathMode: ResourcePathMode;
+  target: string;
+  basePath?: string;
+  resolvedPath?: string;
+  status: ResourcePathStatus;
+  message?: string;
 }
 
 export interface ImportResult {
@@ -190,7 +205,7 @@ export interface OrbitCommand {
 export interface PluginPermission {
   id: string;
   label: string;
-  risk: "low" | "medium" | "high";
+  risk: "low" | "medium" | "high" | "critical";
 }
 
 export interface OrbitPluginManifest {

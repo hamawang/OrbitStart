@@ -10,10 +10,12 @@
     "package:plugin": "powershell -ExecutionPolicy Bypass -File tools/package-plugin.ps1",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "version:set": "node tools/set-version.mjs",
     "version:check": "node tools/check-version-consistency.mjs",
     "release:verify": "node tools/check-version-consistency.mjs --release",
-    "test:e2e": "playwright test tests/basic.spec.ts",
-    "test:e2e:themes": "playwright test tests/atelier-zero.spec.ts",
+    "updater:manifest": "node tools/create-updater-manifest.mjs",
+    "test:e2e": "node tools/run-e2e.mjs tests/basic.spec.ts",
+    "test:e2e:themes": "node tools/run-e2e.mjs tests/atelier-zero.spec.ts",
     "test:custom": "node tests/custom-harness.cjs"
   },
   "dependencies": {

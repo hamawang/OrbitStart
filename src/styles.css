@@ -3507,6 +3507,12 @@ kbd {
   color: var(--danger);
 }
 
+.risk-critical {
+  background: rgba(255, 82, 112, 0.2);
+  border: 1px solid rgba(255, 122, 144, 0.65);
+  color: var(--danger);
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -9737,4 +9743,3 @@ body.bubble-menu-body #root {
   background: rgba(var(--accent-rgb, 122, 144, 255), 0.12) !important;
   box-shadow: 0 0 0 2px var(--accent) !important;
 }
-

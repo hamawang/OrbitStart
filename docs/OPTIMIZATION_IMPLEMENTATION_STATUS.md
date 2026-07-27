@@ -1,4 +1,4 @@
-# 优化实施状态（2026-07-26）
+# 优化实施状态（2026-07-27）
 
 本文件记录本次按优化指导完成的改动、验证结果与未在没有额外决策时擅自推进的事项。
 
@@ -13,7 +13,9 @@
 - Obsidian 路径安全：打开笔记前会 canonicalize vault 和目标文件，拒绝绝对路径、盘符/UNC、`..` 越界和解析到 vault 外的链接目标；丢失笔记会提示重新扫描。
 - 发布防回归：lockfile 根版本已同步；新增 `npm run version:check` 与 `npm run release:verify`；前端版本由 `src/appVersion.ts` 统一读取；updater 插件初始化失败会写入本地插件日志。
 - CI 与测试：新增 Windows CI 和 tag/手动触发的发布就绪校验；后者不签名或发布，但会拒绝 tag 与 updater 清单不一致的版本。`npm run test:custom` 在端口空闲时会启动并回收自己的 Vite 进程。
-- 阶段 6（前端文件拆分）：已将导入过滤、分组规范化、子标签树与资源输入转换抽离至 `src/features/catalog/model.ts`；将窗口标签解析、悬浮球主题加载和悬浮窗口挂载抽离至 `src/app/WindowRouter.tsx`；将资源分组标签、资源行、子标签区和根目录拖放区抽离至 `src/features/catalog/ResourceList.tsx`；将窗口边框缩放控件抽离至 `src/components/layout/WindowResizeEdges.tsx`。主应用组合逻辑仍保留在 `App.tsx`。
+- 阶段 6（前端文件拆分）：已将导入过滤、分组规范化、子标签树与资源输入转换抽离至 `src/features/catalog/model.ts`；将窗口标签解析、悬浮球主题加载和悬浮窗口挂载抽离至 `src/app/WindowRouter.tsx`；将资源分组标签、资源行、子标签区和根目录拖放区抽离至 `src/features/catalog/ResourceList.tsx`；将窗口边框缩放控件抽离至 `src/components/layout/WindowResizeEdges.tsx`；将扫描结果过滤、勾选、分页与预览对话框抽离至 `src/features/catalog/ImportPreviewDialog.tsx`。主应用组合逻辑仍保留在 `App.tsx`。
+- 测试基础设施：基础 E2E 改为 `tools/run-e2e.mjs` 显式管理专用 Vite 进程，避免 Playwright `webServer` 在 Windows 上完成断言后无法退出的问题。
+- 主题 E2E：运行器将实际测试地址经 `ORBITSTART_E2E_BASE_URL` 传给 Playwright 配置和 storage state，消除了 1420/1422 不一致；主题套件现只覆盖主题目录、切换、token、持久化、非法值回退和清理，不再把资源或插件工作流重复塞入主题验证。
 
 ## 验证结果
 
@@ -33,15 +35,51 @@
 | 阶段 6 第二小步后的 `npm run test:e2e` | 通过 | 14/14，包括悬浮球 URL 路由和 Tauri 窗口标签路由。 |
 | 阶段 6 第三小步后的 `npm run test:e2e` | 通过 | 14/14，包括子标签、外部拖放、批量选择和资源操作。 |
 | 关闭桌面应用后的 `npm.cmd run tauri:build -- --no-bundle --ci` | 通过 | release 可执行文件成功编译，已验证原先的输出文件锁不再存在。 |
+| 阶段 6 导入预览拆分后的 `npm.cmd run test:e2e` | 通过 | 15/15，新增扫描预览的过滤和选择覆盖；测试进程在 72 秒内正常退出。 |
+| 主题 E2E 收敛后的 `npm.cmd run test:e2e:themes` | 通过 | 6/6，20.3 秒内完成并以退出码 0 正常退出。 |
 
-## 未实施项与原因
+## 历史未实施项与原因
 
 - 多入口构建第二轮：当前已完成按需加载和窄接口，但悬浮球仍共享主应用入口代码。实现独立入口需要先整理窗口路由和共享 UI 边界。
 - 大文件拆分：`App.tsx` 已完成两次小范围抽离，但仍然较大；`src-tauri/src/main.rs` 和全局 CSS 也仍然较大。后续应继续按功能边界拆分，避免与正确性修复混合。
 - Portable mode：数据根目录、插件/主题携带范围、绝对路径如何转为 workspace 相对路径属于用户数据兼容策略，未在无明确策略时假定行为。
 - 插件权限与 CSP：本地插件可自声明权限并默认启用的模型仍须改造。CSP 还受 worker 的 `unsafe-eval`、Google Fonts 和 blob URL 约束；需要先确定签名、默认拒绝和网络范围策略。
 - 正式 updater 发布：0.8.2 已使用新的 updater 密钥生成真实签名并更新清单；仍需将 NSIS 安装包与同名 `.sig` 上传到 GitHub Release `v0.8.2`。旧版因信任旧公钥，必须先手动安装 0.8.2，随后版本才能恢复自动更新。
-- 主题 E2E：既有 `npm run test:e2e:themes` 超时问题未被删除或放宽；在其单独收敛前，不将主题套件标为通过。
+- 主题 E2E：已单独收敛并通过；后续新增主题时，应在同一套件中补充相应 token 与交互断言，而不是恢复与主题无关的资源或插件工作流。
+
+## 当前收敛状态（2026-07-27，以本节为准）
+
+### 阶段 6：模块边界
+
+- 资源目录模型、列表、导入预览和资源编辑器已经从 App.tsx 拆出；窗口路由与边框缩放控件也已独立。
+- App.tsx 仍约 6,500 行，main.rs 仍约 10,000 行；本轮没有为了追求文件行数而做高风险的大搬迁，后续应继续按页面、命令和数据库边界拆分。
+
+### 阶段 7：便携模式与相对资源路径
+
+- 可执行文件同级存在 portable.flag 或 OrbitStart.Data 时才启用便携数据目录；普通安装继续使用标准数据目录，绝不自动迁移或复制旧数据。
+- schema v8 为资源增加 pathMode 与 basePath；旧数据库和旧 JSON 导入默认为 absolute。
+- app、file、folder、script 可使用 data-relative 或 workspace-relative。路径解析拒绝上级目录、盘符、UNC 和 URL 前缀；启动、定位和编辑器中的路径检查均使用同一解析规则。
+- 已提供 available、missing、permission-denied、network-unavailable、invalid 状态。批量修复预览与前缀替换 UI 尚未实现，不能声称已具备自动修复功能。
+
+### 阶段 8：插件权限与 CSP
+
+- 插件宿主改为能力白名单与双声明交集，移除 shell:open 宽泛兼容权限；脚本文件与内联脚本分别授权。
+- Worker 禁止直接网络、脚本加载和通用 Tauri bridge；贡献 ID 与数量受插件 manifest 限制。高风险插件启用前需要显式确认。
+- 生产和开发 CSP 已收紧且不含 unsafe-eval；插件签名或包哈希验证仍是下一阶段工作，详见 docs/PLUGIN_SECURITY.md。
+
+### 阶段 9：发布与 CI
+
+- 新增 version:set 与 updater:manifest 命令：前者同步应用版本字段，后者只从真实安装包及同名签名生成更新清单，避免复制旧签名。
+- Windows CI 运行版本检查、构建、cargo fmt、cargo clippy、Rust 测试、无 bundle 桌面编译、基础 E2E、主题 E2E 与自定义浏览器检查。
+- 新增 tag 触发的 release.yml：使用 GitHub Secrets 签名、生成 latest.json、验证后将安装包、.sig 与清单上传到 GitHub Release。更新端点改为 GitHub Release 的 latest.json 附件。
+- 最新本地验证：npm run build 通过；npm run test:e2e 为 15/15；npm run test:e2e:themes 为 6/6；npm run test:custom 通过；cargo fmt 通过；cargo test 为 30/30；版本检查通过。
+- cargo clippy 可正常执行但报告 20 条既有 main.rs lint warning，因此 CI 以报告而非 -D warnings 方式运行。该技术债未被误报为本轮代码清零。
+
+### 0.8.3 打包状态
+
+- 已在隔离 `CARGO_TARGET_DIR` 中完成无 bundle 桌面构建，并生成本地手动安装包 `release-artifacts/OrbitStart_0.8.3_x64-setup.exe`；ProductVersion 与 FileVersion 均为 0.8.3，SHA-256 记录在同目录 `.sha256` 文件。
+- 该安装包未进行 Authenticode 或 updater 签名，且没有 `.sig` 与 0.8.3 `latest.json`；它只能用于手动安装，不能发布为自动更新资产。
+- 正式签名发布只剩受保护的 release signing key 与口令不可供当前构建进程读取。隔离构建目录已经绕开运行中旧实例对默认输出路径的锁定；但实际安装和人工升级验收前仍应正常退出旧实例。签名凭据可用后，执行签名构建、生成清单并运行 `release:verify` 即可完成。
 
 ## 性能测量边界
 

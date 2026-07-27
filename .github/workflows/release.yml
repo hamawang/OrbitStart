@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate release tag
+        id: version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          if (-not $ref.StartsWith("v")) {
+            throw "Release workflow requires a v-prefixed tag."
+          }
+          $version = $ref.Substring(1)
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Tag '$ref' does not contain a valid semantic version."
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - run: npm ci
+      - run: npm run version:check -- --expect-version ${{ steps.version.outputs.value }}
+      - run: npm run build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build signed installer
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is required for a release."
+          }
+          npm run tauri:build -- --ci
+      - name: Generate and validate updater manifest
+        id: artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $notes = "docs/RELEASE_NOTES_$version.md"
+          if (-not (Test-Path -LiteralPath $notes)) {
+            throw "Release notes file not found: $notes"
+          }
+          $installer = Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "OrbitStart_$($version)_x64-setup.exe" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "NSIS installer for $version was not produced."
+          }
+          $signature = "$($installer.FullName).sig"
+          if (-not (Test-Path -LiteralPath $signature)) {
+            throw "Updater signature was not produced: $signature"
+          }
+          $manifest = Join-Path $env:RUNNER_TEMP "latest.json"
+          node tools/create-updater-manifest.mjs --version $version --artifact "$($installer.FullName)" --signature $signature --notes-file $notes --output $manifest
+          npm run release:verify -- --expect-version $version --manifest $manifest
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "signature=$signature" >> $env:GITHUB_OUTPUT
+          "manifest=$manifest" >> $env:GITHUB_OUTPUT
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          name: OrbitStart v${{ steps.version.outputs.value }}
+          body_path: docs/RELEASE_NOTES_${{ steps.version.outputs.value }}.md
+          files: |
+            ${{ steps.artifacts.outputs.installer }}
+            ${{ steps.artifacts.outputs.signature }}
+            ${{ steps.artifacts.outputs.manifest }}

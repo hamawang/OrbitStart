@@ -270,7 +270,7 @@ core-command-palette / core-items / core-websites / core-shortcuts / core-bookma
 | 首次引导状态 | localStorage key `orbitstart_onboarding_v1` |
 | 构建产物 exe | `src-tauri\target\release\orbitstart.exe` |
 | NSIS 安装包 | `src-tauri\target\release\bundle\nsis\OrbitStart_x.x.x_x64-setup.exe` |
-| 自动更新源 | `https://raw.githubusercontent.com/xuxinxi14/OrbitStart/main/latest.json` |
+| 自动更新源 | `https://github.com/xuxinxi14/OrbitStart/releases/latest/download/latest.json` |
 
 ---
 

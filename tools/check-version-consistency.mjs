@@ -7,14 +7,28 @@ const args = process.argv.slice(2);
 const releaseMode = args.includes("--release");
 const expectedIndex = args.indexOf("--expect-version");
 const expectedVersion = expectedIndex >= 0 ? args[expectedIndex + 1] : undefined;
+const manifestIndex = args.indexOf("--manifest");
+const manifestPath = manifestIndex >= 0 ? args[manifestIndex + 1] : undefined;
 
 if (expectedIndex >= 0 && (!expectedVersion || expectedVersion.startsWith("--"))) {
   throw new Error("--expect-version requires a semver value");
 }
+if (manifestIndex >= 0 && (!manifestPath || manifestPath.startsWith("--"))) {
+  throw new Error("--manifest requires a path");
+}
 for (const arg of args) {
-  if (arg !== "--release" && arg !== "--expect-version" && arg !== expectedVersion) {
+  if (
+    arg !== "--release"
+    && arg !== "--expect-version"
+    && arg !== expectedVersion
+    && arg !== "--manifest"
+    && arg !== manifestPath
+  ) {
     throw new Error(`Unknown argument: ${arg}`);
   }
+}
+if (manifestPath && !releaseMode) {
+  throw new Error("--manifest can only be used with --release");
 }
 
 function readText(relativePath) {
@@ -77,7 +91,7 @@ if (expectedVersion) {
 }
 
 if (releaseMode) {
-  const manifest = readJson("latest.json");
+  const manifest = readJson(manifestPath ?? "latest.json");
   const platform = manifest.platforms?.["windows-x86_64"];
   expect(manifest.version === packageJson.version, `latest.json is ${String(manifest.version)}, expected ${packageJson.version}`);
   expect(typeof platform?.url === "string", "latest.json is missing platforms.windows-x86_64.url");

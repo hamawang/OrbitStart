@@ -1,4 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
+const e2ePort = 1422;
+const e2eOrigin = process.env.ORBITSTART_E2E_BASE_URL ?? `http://127.0.0.1:${e2ePort}`;
 
 export default defineConfig({
   timeout: 90000,
@@ -7,15 +9,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  reporter: [['html', { open: 'never' }], ['list']],
-  webServer: {
-    command: 'npm.cmd run dev',
-    url: 'http://127.0.0.1:1420',
-    reuseExistingServer: true,
-    timeout: 120000,
-  },
+  reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:1420',
+    baseURL: e2eOrigin,
     trace: 'on-first-retry',
   },
   projects: [

@@ -127,6 +127,12 @@ import { closeWindow, getAppWindow, minimizeWindow, toggleMaximizeWindow } from 
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
 import { removeItemById, upsertItemById, upsertItemsById } from "./lib/catalogState";
 import { WindowRouter } from "./app/WindowRouter";
+import { ImportPreviewDialog, type ImportPreviewState } from "./features/catalog/ImportPreviewDialog";
+import {
+  ResourceEditorDialog,
+  type EditorState,
+  type ResourceEditorKindOption
+} from "./features/catalog/ResourceEditorDialog";
 import {
   DroppableRootSection,
   SortableGroupTab,
@@ -135,18 +141,15 @@ import {
 } from "./features/catalog/ResourceList";
 import {
   buildDefaultImportSelection,
-  buildImportFilterReasons,
   buildSubTagTree,
   cleanSubTag,
   groupLabelsForItem,
   inputFromItem,
   itemHasGroup,
   joinGroupIds,
-  listToText,
   mergeGroupValues,
   normalizeDroppedResourceGroup,
   normalizeGroupValue,
-  normalizeList,
   splitGroupIds,
   subTagDisplayName,
   subTagNodeTotal,
@@ -195,6 +198,7 @@ import {
   previewScanBrowserBookmarks,
   importScannedItems,
   hydrateShortcutIcons,
+  getItemPathStatus,
   searchTrips,
   setTodoWindowAlwaysOnTop,
   toggleObsidianTaskCompletion,
@@ -356,7 +360,7 @@ const iconMap = {
   Workflow
 };
 
-const baseKindOptions: Array<{ value: ItemKind; label: string; icon: string; group: string; accent: string; pluginId?: string }> = [
+const baseKindOptions: ResourceEditorKindOption[] = [
   { value: "app", label: "应用", icon: "AppWindow", group: "apps", accent: "#5cc8ff" },
   { value: "file", label: "文件", icon: "FileText", group: "work", accent: "#f6b95b" },
   { value: "folder", label: "文件夹", icon: "FolderOpen", group: "work", accent: "#8bd450" },
@@ -364,17 +368,6 @@ const baseKindOptions: Array<{ value: ItemKind; label: string; icon: string; gro
   { value: "script", label: "脚本", icon: "TerminalSquare", group: "scripts", accent: "#41e0a8" },
   { value: "action_chain", label: "动作链", icon: "Workflow", group: "work", accent: "#ff7a90", pluginId: "core-actions" }
 ];
-
-type EditorState =
-  | {
-      mode: "create";
-      input: OrbitItemInput;
-    }
-  | {
-      mode: "edit";
-      item: OrbitItem;
-      input: OrbitItemInput;
-    };
 
 function Icon({ name, size = 22 }: { name: string; size?: number }) {
   if (name.startsWith("data:image/")) {
@@ -398,8 +391,13 @@ function makeEmptyInput(kind: ItemKind = "app"): OrbitItemInput {
     subTag: "",
     icon: option.icon,
     accent: option.accent,
-    favorite: false
+    favorite: false,
+    pathMode: "absolute"
   };
+}
+
+function supportsRelativeResourcePath(kind: ItemKind): boolean {
+  return kind === "app" || kind === "file" || kind === "folder" || kind === "script";
 }
 
 function dropGroupIdFromElement(target: EventTarget | Element | null) {
@@ -716,14 +714,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const hotkeyInputRef = useRef<HTMLInputElement>(null);
 
-  const [importPreview, setImportPreview] = useState<{
-    kind: "shortcuts" | "bookmarks";
-    items: OrbitItemInput[];
-    selectedIndices: Set<number>;
-    searchQuery: string;
-    visibleCount: number;
-    onClose?: () => void;
-  } | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreviewState | null>(null);
   const [pluginHostRevision, setPluginHostRevision] = useState(0);
   const paletteInputRef = useRef<HTMLInputElement>(null);
   const commandBarInputRef = useRef<HTMLInputElement>(null);
@@ -2162,12 +2153,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   function inputWithKind(input: OrbitItemInput, kind: ItemKind): OrbitItemInput {
     const option = baseKindOptions.find((candidate) => candidate.value === kind) ?? baseKindOptions[0];
+    const supportsRelativePath = supportsRelativeResourcePath(kind);
     return {
       ...input,
       kind,
       group: normalizeGroupValue(mergeGroupValues(option.group, input.group), option.group),
       icon: option.icon,
-      accent: option.accent
+      accent: option.accent,
+      pathMode: supportsRelativePath ? input.pathMode ?? "absolute" : "absolute",
+      basePath: supportsRelativePath ? input.basePath : undefined
     };
   }
 
@@ -2256,7 +2250,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
       aliases: Array.from(new Set([...current.aliases, ...picked.aliases])),
       tags: Array.from(new Set([...current.tags, ...picked.tags])),
       icon: picked.icon,
-      accent: picked.accent
+      accent: picked.accent,
+      pathMode: picked.pathMode ?? "absolute",
+      basePath: picked.basePath
     };
   }
 
@@ -2285,6 +2281,30 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setToast("已应用自定义图标");
     } catch (error) {
       setToast(`选择图标失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function inspectEditorPath() {
+    if (!editor || editor.mode !== "edit") return;
+    const statusLabels: Record<string, string> = {
+      available: "可用",
+      missing: "不存在",
+      "permission-denied": "权限不足",
+      "network-unavailable": "网络路径暂不可用",
+      invalid: "路径无效"
+    };
+
+    setBusy(true);
+    try {
+      const report = await getItemPathStatus(editor.item.id);
+      const label = statusLabels[report.status] ?? report.status;
+      const location = report.resolvedPath ?? report.target;
+      const detail = report.message ? "：" + report.message : "";
+      setToast("路径状态：" + label + " · " + location + detail);
+    } catch (error) {
+      setToast("路径检查失败：" + String(error));
     } finally {
       setBusy(false);
     }
@@ -2834,6 +2854,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }
 
   async function togglePlugin(plugin: OrbitPluginManifest) {
+    const sensitivePermissions = plugin.permissions.filter(
+      (permission) => permission.risk === "high" || permission.risk === "critical"
+    );
+    if (!plugin.enabled && sensitivePermissions.length > 0) {
+      const permissionNames = sensitivePermissions.map((permission) => permission.label).join("、");
+      const confirmed = window.confirm(
+        "启用插件“" + plugin.name + "”将授予高风险能力：" + permissionNames + "。请仅在信任插件来源和用途时继续。"
+      );
+      if (!confirmed) {
+        setToast("已取消启用高风险插件");
+        return;
+      }
+    }
+
     setBusy(true);
     try {
       const snapshot = await setPluginEnabled(plugin.id, !plugin.enabled);
@@ -5702,210 +5736,94 @@ export function MainApp({ windowLabel }: MainAppProps) {
     );
   };
 
-  const renderImportPreviewDialog = () => {
-    if (!importPreview) return null;
-
-    const { kind, items, selectedIndices, searchQuery, visibleCount } = importPreview;
-
-    const handleClose = () => {
-      setImportPreview(null);
-      if (importPreview.onClose) {
-        importPreview.onClose();
-      }
-    };
-    
-    // 根据搜索框内容过滤出显示的项目列表
-    const filteredItemsWithOriginalIndex = items
-      .map((item, index) => ({ item, index }))
-      .filter(({ item }) => {
-        const q = searchQuery.toLowerCase();
-        return (
-          item.title.toLowerCase().includes(q) ||
-          item.subtitle.toLowerCase().includes(q) ||
-          item.target.toLowerCase().includes(q)
-        );
-      });
-    const visibleItemsWithOriginalIndex = filteredItemsWithOriginalIndex.slice(0, visibleCount);
-    const filterReasons = buildImportFilterReasons(kind, items);
-
-    // Toggle a single scanned entry while preserving automatic filter hints.
-    const handleToggleItem = (index: number) => {
-      const nextSelected = new Set(selectedIndices);
-      if (nextSelected.has(index)) {
-        nextSelected.delete(index);
-      } else {
-        nextSelected.add(index);
-      }
-      setImportPreview({ ...importPreview, selectedIndices: nextSelected });
-    };
-
-    // 全选当前过滤出的项目
-    const handleSelectAllFiltered = () => {
-      const nextSelected = new Set(selectedIndices);
-      filteredItemsWithOriginalIndex.forEach(({ index }) => {
-        nextSelected.add(index);
-      });
-      setImportPreview({ ...importPreview, selectedIndices: nextSelected });
-    };
-
-    // 反选当前过滤出的项目（只针对当前显示的过滤列表进行切换）
-    const handleInvertFiltered = () => {
-      const nextSelected = new Set(selectedIndices);
-      filteredItemsWithOriginalIndex.forEach(({ index }) => {
-        if (nextSelected.has(index)) {
-          nextSelected.delete(index);
-        } else {
-          nextSelected.add(index);
-        }
-      });
-      setImportPreview({ ...importPreview, selectedIndices: nextSelected });
-    };
-
-    // 执行导入
-    const handleConfirmImport = async () => {
-      const selectedItems = Array.from(selectedIndices).map((idx) => items[idx]);
-      if (selectedItems.length === 0) {
-        setToast("未选中任何导入项");
-        return;
-      }
-      setBusy(true);
-      setToast("正在批量导入项目，请稍候...");
-      try {
-        const result = await importScannedItems(selectedItems);
-        await reload();
-        const skippedCopy = result.skipped > 0 ? `，跳过 ${result.skipped} 个重复项` : "";
-        setToast(`成功处理 ${result.imported} 个资源（新增 ${result.inserted}，更新 ${result.updated}）${skippedCopy}`);
-        handleClose();
-        if (kind === "shortcuts" && result.itemIds.length > 0) {
-          void hydrateShortcutIcons(result.itemIds)
-            .then(async (updated) => {
-              if (updated > 0) {
-                await reload();
-                setToast(`资源导入完成，已在后台补全 ${updated} 个程序图标`);
-              }
-            })
-            .catch((error) => {
-              console.error("Failed to hydrate shortcut icons:", error);
-              setToast(`快捷方式图标提取失败：${String(error)}`);
-            });
-        }
-      } catch (error) {
-        setToast(`导入失败：${String(error)}`);
-      } finally {
-        setBusy(false);
-      }
-    };
-
-    const label = kind === "shortcuts" ? "本地程序" : "浏览器书签";
-
-    return (
-      <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
-        <div className="modal-panel import-preview-panel">
-          <div className="modal-head">
-            <div>
-              <p className="eyebrow">Batch Import</p>
-              <h2>批量导入过滤：{label}</h2>
-            </div>
-            <button className="icon-action" onClick={handleClose}>
-              <X size={18} />
-            </button>
-          </div>
-
-          <div className="import-search-bar">
-            <Search size={16} />
-            <input
-              type="text"
-              placeholder="搜索扫描出的项目名称或路径..."
-              value={searchQuery}
-              onChange={(e) => setImportPreview({
-                ...importPreview,
-                searchQuery: e.target.value,
-                visibleCount: IMPORT_PREVIEW_PAGE_SIZE
-              })}
-            />
-          </div>
-
-          <div className="import-toolbar">
-            <span>
-              已选中 <strong>{selectedIndices.size}</strong> / {items.length} 项
-            </span>
-            <div className="toolbar-actions">
-              <button type="button" className="toolbar-btn" onClick={handleSelectAllFiltered}>
-                全选过滤项
-              </button>
-              <button type="button" className="toolbar-btn" onClick={handleInvertFiltered}>
-                反选过滤项
-              </button>
-              <button type="button" className="toolbar-btn" onClick={() => setImportPreview({ ...importPreview, selectedIndices: new Set() })}>
-                清空选择
-              </button>
-            </div>
-          </div>
-
-          <div className="import-preview-list">
-            {filteredItemsWithOriginalIndex.length === 0 ? (
-              <div className="empty-preview">没有找到匹配的项目</div>
-            ) : (
-              <>
-                {visibleItemsWithOriginalIndex.map(({ item, index }) => {
-                  const filterReason = filterReasons.get(index);
-                  const isUninstall = filterReason?.code === "uninstall";
-                  const isFiltered = Boolean(filterReason);
-                  const isChecked = selectedIndices.has(index);
-                  return (
-                    <div
-                      key={index}
-                      className={`import-preview-item ${isFiltered ? "is-filtered" : ""} ${isUninstall ? "is-uninstall" : ""} ${isChecked ? "is-checked" : ""}`}
-                      onClick={() => handleToggleItem(index)}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => {}}
-                      />
-                      <div className="item-icon-wrapper" style={{ color: item.accent }}>
-                        <Icon name={item.icon} size={18} />
-                      </div>
-                      <div className="item-info">
-                        <div className="item-title">
-                          {item.title}
-                          {filterReason && <span className="filter-tag">{filterReason.label}</span>}
-                        </div>
-                        <div className="item-subtitle" title={item.subtitle}>
-                          {item.subtitle}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {visibleItemsWithOriginalIndex.length < filteredItemsWithOriginalIndex.length && (
-                  <button
-                    type="button"
-                    className="import-load-more"
-                    onClick={() => setImportPreview({
-                      ...importPreview,
-                      visibleCount: visibleCount + IMPORT_PREVIEW_PAGE_SIZE
-                    })}
-                  >
-                    继续显示（{visibleItemsWithOriginalIndex.length} / {filteredItemsWithOriginalIndex.length}）
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-
-          <div className="modal-actions">
-            <button className="secondary-action" onClick={handleClose} disabled={busy}>
-              取消
-            </button>
-            <button className="primary-action" onClick={handleConfirmImport} disabled={busy || selectedIndices.size === 0}>
-              确认导入 ({selectedIndices.size})
-            </button>
-          </div>
-        </div>
-      </section>
-    );
+  const closeImportPreview = () => {
+    const onClose = importPreview?.onClose;
+    setImportPreview(null);
+    onClose?.();
   };
+
+  const handleConfirmImportPreview = async () => {
+    if (!importPreview) return;
+    const selectedItems = Array.from(importPreview.selectedIndices).map((index) => importPreview.items[index]);
+    if (selectedItems.length === 0) {
+      setToast("未选中任何导入项");
+      return;
+    }
+    setBusy(true);
+    setToast("正在批量导入项目，请稍候...");
+    try {
+      const result = await importScannedItems(selectedItems);
+      await reload();
+      const skippedCopy = result.skipped > 0 ? `，跳过 ${result.skipped} 个重复项` : "";
+      setToast(`成功处理 ${result.imported} 个资源（新增 ${result.inserted}，更新 ${result.updated}）${skippedCopy}`);
+      closeImportPreview();
+      if (importPreview.kind === "shortcuts" && result.itemIds.length > 0) {
+        void hydrateShortcutIcons(result.itemIds)
+          .then(async (updated) => {
+            if (updated > 0) {
+              await reload();
+              setToast(`资源导入完成，已在后台补全 ${updated} 个程序图标`);
+            }
+          })
+          .catch((error) => {
+            console.error("Failed to hydrate shortcut icons:", error);
+            setToast(`快捷方式图标提取失败：${String(error)}`);
+          });
+      }
+    } catch (error) {
+      setToast(`导入失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renderImportPreviewDialog = () => importPreview && (
+    <ImportPreviewDialog
+      preview={importPreview}
+      busy={busy}
+      pageSize={IMPORT_PREVIEW_PAGE_SIZE}
+      onPreviewChange={setImportPreview}
+      onClose={closeImportPreview}
+      onConfirm={handleConfirmImportPreview}
+      renderItemIcon={(name, size) => <Icon name={name} size={size} />}
+    />
+  );
+
+  const renderResourceEditorDialog = () => editor && (
+    <ResourceEditorDialog
+      editor={editor}
+      kindOptions={visibleKindOptions}
+      groups={visibleGroups}
+      busy={busy}
+      iconStyle={resourceIconStyle(editor.input as OrbitItem)}
+      renderIcon={(name, size) => <Icon name={name} size={size} />}
+      onInputChange={(input) => {
+        setEditor((current) => (current ? { ...current, input } : current));
+      }}
+      onKindChange={(kind) => {
+        setEditor((current) => (
+          current ? { ...current, input: inputWithKind(current.input, kind) } : current
+        ));
+      }}
+      onPickTarget={(mode) => void chooseResourceTarget(mode)}
+      onInspectPath={() => void inspectEditorPath()}
+      onOpenSubTagSelector={(currentValue) => {
+        setSubTagSelectModal({
+          isOpen: true,
+          currentValue,
+          onSelect: (subTag) => {
+            setEditor((current) => (
+              current ? { ...current, input: { ...current.input, subTag } } : current
+            ));
+          }
+        });
+      }}
+      onPickIcon={() => void chooseCustomIcon()}
+      onResetIcon={resetEditorIcon}
+      onClose={() => setEditor(null)}
+      onSave={() => void saveEditor()}
+    />
+  );
 
   const renderTodoPanelWindow = () => {
     const noteTitle = todoPanelPayload.title || todoPanelTasks[0]?.noteTitle || "Obsidian Todo";
@@ -6437,239 +6355,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         document.body
       )}
 
-      {editor && (
-        <section className="palette-backdrop" role="dialog" aria-modal="true">
-          <div className="modal-panel editor-panel">
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">{editor.mode === "create" ? "New resource" : "Edit resource"}</p>
-                <h2>{editor.mode === "create" ? "添加资源" : "编辑资源"}</h2>
-              </div>
-              <button className="icon-action" onClick={() => setEditor(null)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="form-grid">
-              <label>
-                类型
-                <select
-                  value={editor.input.kind}
-                  onChange={(event) => setEditor({ ...editor, input: inputWithKind(editor.input, event.target.value as ItemKind) })}
-                >
-                  {visibleKindOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                标题
-                <input
-                  value={editor.input.title}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, title: event.target.value } })}
-                  placeholder="例如 VS Code"
-                />
-              </label>
-              <label className="wide-field">
-                {editor.input.kind === "action_chain" ? "动作链目标" : "目标路径或网址"}
-                {editor.input.kind === "action_chain" ? (
-                  <textarea
-                    value={editor.input.target}
-                    onChange={(event) => setEditor({ ...editor, input: { ...editor.input, target: event.target.value } })}
-                    placeholder={"每行一个目标，例如：\nC:\\Windows\\System32\\notepad.exe\nhttps://github.com\nE:\\OrbitStart"}
-                  />
-                ) : (
-                  <>
-                    <input
-                      value={editor.input.target}
-                      onChange={(event) => setEditor({ ...editor, input: { ...editor.input, target: event.target.value } })}
-                      placeholder="C:\\Program Files\\... 或 https://..."
-                    />
-                    <div className="field-actions">
-                      <button type="button" className="secondary-action" onClick={() => void chooseResourceTarget("file")} disabled={busy}>
-                        <FolderOpen size={16} />
-                        选择文件/应用/脚本
-                      </button>
-                      <button type="button" className="secondary-action" onClick={() => void chooseResourceTarget("folder")} disabled={busy}>
-                        <FolderKanban size={16} />
-                        选择文件夹
-                      </button>
-                    </div>
-                  </>
-                )}
-              </label>
-              {editor.input.kind !== "action_chain" && (
-                <label className="wide-field">
-                  启动参数 (可选)
-                  <input
-                    value={editor.input.arguments || ""}
-                    onChange={(event) => setEditor({ ...editor, input: { ...editor.input, arguments: event.target.value } })}
-                    placeholder="例如：--portable --no-sandbox"
-                  />
-                </label>
-              )}
-              <label className="wide-field">
-                副标题
-                <input
-                  value={editor.input.subtitle}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, subtitle: event.target.value } })}
-                  placeholder="显示在标题下方"
-                />
-              </label>
-              <label className="wide-field">
-                所属分组 / 标签 (支持多选)
-                <div className="group-checkbox-grid">
-                  {visibleGroups.filter((group) => group.id !== "all").map((group) => {
-                    const selectedGroups = splitGroupIds(editor.input.group);
-                    const isChecked = selectedGroups.includes(group.id);
-                    return (
-                      <button
-                        key={group.id}
-                        type="button"
-                        className={`group-tag-checkbox ${isChecked ? "checked" : ""}`}
-                        onClick={() => {
-                          const next = isChecked
-                            ? selectedGroups.filter((g) => g !== group.id)
-                            : [...selectedGroups, group.id];
-                          setEditor({
-                            ...editor,
-                            input: { ...editor.input, group: joinGroupIds(next) }
-                          });
-                        }}
-                      >
-                        <Icon name={group.icon} size={14} />
-                        <span>{group.title}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </label>
-              <label className="wide-field">
-                子目录（可选）
-                <div className="subtag-select-wrapper" style={{ display: "flex", gap: "8px" }}>
-                  <input
-                    value={editor.input.subTag ? `${editor.input.subTag}` : "无（处于主目录）"}
-                    readOnly
-                    placeholder="未选择子目录"
-                    style={{ cursor: "pointer", flex: 1, caretColor: "transparent" }}
-                    onClick={() => {
-                      setSubTagSelectModal({
-                        isOpen: true,
-                        currentValue: editor.input.subTag ?? "",
-                        onSelect: (val) => {
-                          setEditor({
-                            ...editor,
-                            input: { ...editor.input, subTag: val }
-                          });
-                        }
-                      });
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="secondary-action"
-                    onClick={() => {
-                      setSubTagSelectModal({
-                        isOpen: true,
-                        currentValue: editor.input.subTag ?? "",
-                        onSelect: (val) => {
-                          setEditor({
-                            ...editor,
-                            input: { ...editor.input, subTag: val }
-                          });
-                        }
-                      });
-                    }}
-                  >
-                    选择子目录
-                  </button>
-                  {(editor.input.subTag ?? "") !== "" && (
-                    <button
-                      type="button"
-                      className="secondary-action danger-action"
-                      style={{ padding: "0 12px" }}
-                      onClick={() => {
-                        setEditor({
-                          ...editor,
-                          input: { ...editor.input, subTag: "" }
-                        });
-                      }}
-                    >
-                      移回主目录
-                    </button>
-                  )}
-                </div>
-              </label>
-              <label>
-                颜色
-                <input
-                  type="color"
-                  value={editor.input.accent}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, accent: event.target.value } })}
-                />
-              </label>
-              <label className="wide-field">
-                自定义图标
-                <div className="icon-picker-row">
-                  <span
-                    className="resource-icon"
-                    style={{
-                      "--accent": editor.input.accent,
-                      "--asset-icon-base": isLocalGalaxyTheme ? `url("${iconBaseFor(editor.input as OrbitItem)}")` : "none"
-                    } as CSSProperties}
-                  >
-                    <Icon name={editor.input.icon} size={26} />
-                  </span>
-                  <button type="button" className="secondary-action" onClick={() => void chooseCustomIcon()} disabled={busy}>
-                    <Image size={16} />
-                    选择图片
-                  </button>
-                  <button type="button" className="secondary-action" onClick={resetEditorIcon} disabled={busy}>
-                    恢复默认
-                  </button>
-                </div>
-              </label>
-              <label className="wide-field">
-                别名
-                <input
-                  value={listToText(editor.input.aliases)}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, aliases: normalizeList(event.target.value) } })}
-                  placeholder="用逗号分隔，例如 code, ide, 编辑器"
-                />
-              </label>
-              <label className="wide-field">
-                标签
-                <input
-                  value={listToText(editor.input.tags)}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, tags: normalizeList(event.target.value) } })}
-                  placeholder="用逗号分隔，例如 dev, daily"
-                />
-              </label>
-              <label className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={editor.input.favorite}
-                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, favorite: event.target.checked } })}
-                />
-                加入收藏
-              </label>
-            </div>
-
-            <div className="modal-actions">
-              <button className="secondary-action" onClick={() => setEditor(null)}>
-                取消
-              </button>
-              <button className="primary-action" onClick={saveEditor} disabled={busy}>
-                <Save size={18} />
-                保存
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
+      {editor && renderResourceEditorDialog()}
       {selectedPlugin && (
         <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setSelectedPlugin(null); }}>
           <div className="modal-panel plugin-detail-panel">

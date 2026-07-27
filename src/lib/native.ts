@@ -10,6 +10,7 @@ import type {
   ObsidianVaultConfig,
   OrbitItem,
   OrbitItemInput,
+  ResourcePathStatusReport,
   Phase0Snapshot,
   PluginRuntimeSource,
   Trip,
@@ -785,6 +786,22 @@ export async function revealTarget(target: string): Promise<string> {
   } catch (error) {
     if (hasNativeBridge()) throw error;
     return `本地预览模式：已模拟打开所在位置 ${target}`;
+  }
+}
+
+export async function getItemPathStatus(id: string): Promise<ResourcePathStatusReport> {
+  try {
+    return await invokeNative<ResourcePathStatusReport>("get_item_path_status", { id });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const item = readBrowserItems().find((candidate) => candidate.id === id);
+    return {
+      pathMode: item?.pathMode ?? "absolute",
+      target: item?.target ?? "",
+      basePath: item?.basePath,
+      status: "invalid",
+      message: "本地预览模式无法检查磁盘路径"
+    };
   }
 }
 

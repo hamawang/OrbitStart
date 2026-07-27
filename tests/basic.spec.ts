@@ -5,7 +5,7 @@ test.use({
     cookies: [],
     origins: [
       {
-        origin: 'http://127.0.0.1:1420',
+        origin: 'http://127.0.0.1:1422',
         localStorage: [
           {
             name: 'orbitstart_onboarding_v1',
@@ -77,6 +77,28 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(styles.bg).not.toBe('');
     expect(styles.accent).not.toBe('');
     expect(styles.fontUi).not.toBe('');
+  });
+
+  test('should filter and select scanned items in the import preview', async ({ page }) => {
+    const scanButton = page.locator('.icon-action[title="扫描本地程序"]');
+    await expect(scanButton).toBeEnabled();
+    await scanButton.click();
+
+    const dialog = page.locator('.import-preview-panel');
+    await expect(dialog).toContainText('批量导入过滤：本地程序');
+    await expect(dialog.locator('.import-preview-item')).toHaveCount(2);
+    await expect(dialog.locator('.filter-tag')).toContainText('卸载/安装维护');
+    await expect(dialog.locator('.import-toolbar')).toContainText('已选中 1 / 2 项');
+
+    await dialog.locator('.import-search-bar input').fill('谷歌浏览器');
+    await expect(dialog.locator('.import-preview-item')).toHaveCount(1);
+
+    await dialog.getByRole('button', { name: '清空选择' }).click();
+    await expect(dialog.locator('.import-toolbar')).toContainText('已选中 0 / 2 项');
+    await dialog.getByRole('button', { name: '全选过滤项' }).click();
+    await expect(dialog.locator('.import-toolbar')).toContainText('已选中 1 / 2 项');
+    await dialog.getByRole('button', { name: '反选过滤项' }).click();
+    await expect(dialog.locator('.import-toolbar')).toContainText('已选中 0 / 2 项');
   });
 
   test('should render nested subdirectories and collapse them from aligned buttons', async ({ page }) => {
@@ -346,6 +368,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     });
     await page.locator('.context-menu button', { hasText: '编辑资源' }).click();
     await expect(page.locator('.modal-panel h2', { hasText: '编辑资源' })).toBeVisible();
+    const pathMode = page.locator('.editor-panel select').nth(1);
+    await expect(pathMode).toHaveValue('absolute');
+    await pathMode.selectOption('data-relative');
+    await expect(page.locator('.editor-panel input[placeholder="例如：resources\\\\tools\\\\tool.exe"]')).toBeVisible();
 
     // Click select subtag button
     await page.locator('.modal-panel button', { hasText: '选择子目录' }).click();

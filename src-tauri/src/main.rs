@@ -1,6 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod portable;
+
 use base64::{engine::general_purpose, Engine as _};
+use portable::{
+    inspect_resource_path, normalize_resource_path_fields, prepare_data_directory,
+    resolve_data_directory, resolve_resource_path, ResourcePathMode, ResourcePathStatusReport,
+};
 use rusqlite::{
     backup::{Backup, StepResult},
     params, Connection, OptionalExtension, TransactionBehavior,
@@ -59,6 +65,10 @@ struct OrbitItem {
     sort_order: i64,
     #[serde(default)]
     sub_tag: String,
+    #[serde(default)]
+    path_mode: ResourcePathMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_path: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -78,6 +88,10 @@ struct OrbitItemInput {
     icon: String,
     accent: String,
     favorite: bool,
+    #[serde(default)]
+    path_mode: ResourcePathMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_path: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -398,10 +412,10 @@ fn app_data_dir() -> Result<PathBuf, String> {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let path = base.join("OrbitStart");
-    fs::create_dir_all(&path)
-        .map_err(|error| format!("Failed to create data directory: {error}"))?;
-    Ok(path)
+    let executable = std::env::current_exe().ok();
+    let directory = resolve_data_directory(executable.as_deref(), &base);
+    prepare_data_directory(&directory)?;
+    Ok(directory.path)
 }
 
 fn plugins_dir() -> Result<PathBuf, String> {
@@ -420,6 +434,59 @@ fn themes_dir() -> Result<PathBuf, String> {
 
 fn db_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("orbit.db"))
+}
+
+fn resource_kind_supports_relative_paths(kind: &str) -> bool {
+    matches!(kind, "app" | "file" | "folder" | "script")
+}
+
+fn normalize_item_path_fields(
+    kind: &str,
+    path_mode: ResourcePathMode,
+    target: &str,
+    base_path: Option<&str>,
+) -> Result<(ResourcePathMode, Option<String>), String> {
+    if path_mode != ResourcePathMode::Absolute && !resource_kind_supports_relative_paths(kind) {
+        return Err(format!(
+            "Path mode '{path_mode:?}' is only supported for app, file, folder, and script resources"
+        ));
+    }
+    let normalized = normalize_resource_path_fields(path_mode, target, base_path)?;
+    Ok((normalized.mode, normalized.base_path))
+}
+
+fn resolve_item_target(item: &OrbitItem) -> Result<String, String> {
+    if item.path_mode == ResourcePathMode::Absolute {
+        return Ok(item.target.clone());
+    }
+    if !resource_kind_supports_relative_paths(&item.kind) {
+        return Err(format!(
+            "Resource '{}' uses a relative path mode but its kind '{}' cannot resolve local paths",
+            item.title, item.kind
+        ));
+    }
+    let resolved = resolve_resource_path(
+        &app_data_dir()?,
+        item.path_mode,
+        &item.target,
+        item.base_path.as_deref(),
+    )?;
+    Ok(resolved.to_string_lossy().to_string())
+}
+
+fn item_path_status(item: &OrbitItem) -> Result<ResourcePathStatusReport, String> {
+    if !resource_kind_supports_relative_paths(&item.kind) {
+        return Err(format!(
+            "Resource '{}' ({}) does not have a local path to inspect",
+            item.title, item.kind
+        ));
+    }
+    Ok(inspect_resource_path(
+        &app_data_dir()?,
+        item.path_mode,
+        &item.target,
+        item.base_path.as_deref(),
+    ))
 }
 
 fn open_database_connection_at(path: &Path) -> Result<Connection, String> {
@@ -451,7 +518,7 @@ fn open_db() -> Result<Connection, String> {
     open_database_connection()
 }
 
-const CURRENT_SCHEMA_VERSION: i32 = 7;
+const CURRENT_SCHEMA_VERSION: i32 = 8;
 
 #[derive(Clone, Copy)]
 struct DatabaseMigration {
@@ -460,7 +527,7 @@ struct DatabaseMigration {
     apply: fn(&Connection) -> Result<(), String>,
 }
 
-const DATABASE_MIGRATIONS: [DatabaseMigration; 7] = [
+const DATABASE_MIGRATIONS: [DatabaseMigration; 8] = [
     DatabaseMigration {
         version: 1,
         name: "initial_core_schema",
@@ -495,6 +562,11 @@ const DATABASE_MIGRATIONS: [DatabaseMigration; 7] = [
         version: 7,
         name: "shortcut_scan_cache",
         apply: migration_007_shortcut_scan_cache,
+    },
+    DatabaseMigration {
+        version: 8,
+        name: "resource_path_modes",
+        apply: migration_008_resource_path_modes,
     },
 ];
 
@@ -929,6 +1001,27 @@ fn migration_007_shortcut_scan_cache(conn: &Connection) -> Result<(), String> {
     .map_err(|error| format!("Failed to create shortcut scan cache schema: {error}"))
 }
 
+fn migration_008_resource_path_modes(conn: &Connection) -> Result<(), String> {
+    ensure_table_column(
+        conn,
+        "items",
+        "path_mode",
+        "ALTER TABLE items ADD COLUMN path_mode TEXT NOT NULL DEFAULT 'absolute'",
+    )?;
+    ensure_table_column(
+        conn,
+        "items",
+        "base_path",
+        "ALTER TABLE items ADD COLUMN base_path TEXT",
+    )?;
+    conn.execute(
+        "UPDATE items SET path_mode = 'absolute' WHERE path_mode IS NULL OR TRIM(path_mode) = ''",
+        [],
+    )
+    .map_err(|error| format!("Failed to backfill resource path modes: {error}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 fn init_db(conn: &mut Connection) -> Result<(), String> {
     run_migrations(conn, None)?;
@@ -1028,11 +1121,13 @@ mod database_migration_tests {
 
         assert_eq!(
             schema_version(&conn).expect("schema version should read"),
-            7
+            8
         );
         assert!(column_exists(&conn, "items", "arguments"));
         assert!(column_exists(&conn, "items", "sort_order"));
         assert!(column_exists(&conn, "items", "sub_tag"));
+        assert!(column_exists(&conn, "items", "path_mode"));
+        assert!(column_exists(&conn, "items", "base_path"));
         assert!(column_exists(&conn, "groups", "sort_order"));
         assert!(column_exists(&conn, "obsidian_notes", "favorite"));
         assert!(backup_files(&database).is_empty());
@@ -1048,18 +1143,20 @@ mod database_migration_tests {
 
         assert_eq!(
             schema_version(&conn).expect("schema version should read"),
-            7
+            8
         );
-        let values: (String, String, i64) = conn
+        let values: (String, String, i64, String, Option<String>) = conn
             .query_row(
-                "SELECT arguments, sub_tag, launch_count FROM items WHERE id = 'legacy-item'",
+                "SELECT arguments, sub_tag, launch_count, path_mode, base_path FROM items WHERE id = 'legacy-item'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .expect("legacy item should remain after migration");
         assert_eq!(values.0, "");
         assert_eq!(values.1, "");
         assert_eq!(values.2, 3);
+        assert_eq!(values.3, "absolute");
+        assert_eq!(values.4, None);
 
         let backups = backup_files(&database);
         assert_eq!(backups.len(), 1, "legacy upgrades should create one backup");
@@ -1083,6 +1180,37 @@ mod database_migration_tests {
     }
 
     #[test]
+    fn upgrades_a_version_seven_database_with_absolute_path_defaults() {
+        let database = TestDatabase::new("path-mode-v7");
+        let mut conn = test_connection(&database);
+        create_legacy_core_schema(&conn);
+        for migration in DATABASE_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 7)
+        {
+            (migration.apply)(&conn).expect("version seven migration should apply");
+        }
+        conn.pragma_update(None, "user_version", 7)
+            .expect("test database should be marked as version seven");
+
+        run_migrations(&mut conn, None).expect("version seven database should migrate");
+
+        let values: (String, Option<String>) = conn
+            .query_row(
+                "SELECT path_mode, base_path FROM items WHERE id = 'legacy-item'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy item should receive path defaults");
+        assert_eq!(values.0, "absolute");
+        assert_eq!(values.1, None);
+        assert_eq!(
+            schema_version(&conn).expect("schema version should read"),
+            CURRENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
     fn upgrades_an_unversioned_current_schema_without_column_conflicts() {
         let database = TestDatabase::new("current-v0");
         let mut conn = test_connection(&database);
@@ -1096,11 +1224,13 @@ mod database_migration_tests {
 
         assert_eq!(
             schema_version(&conn).expect("schema version should read"),
-            7
+            8
         );
         assert!(column_exists(&conn, "items", "arguments"));
         assert!(column_exists(&conn, "items", "sort_order"));
         assert!(column_exists(&conn, "items", "sub_tag"));
+        assert!(column_exists(&conn, "items", "path_mode"));
+        assert!(column_exists(&conn, "items", "base_path"));
         let item_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM items WHERE id = 'legacy-item'",
@@ -1142,7 +1272,7 @@ mod database_migration_tests {
         };
         assert_eq!(
             schema_version(&conn).expect("schema version should read"),
-            7
+            8
         );
         assert_eq!(schema_after, schema_before);
         assert!(backup_files(&database).is_empty());
@@ -1372,6 +1502,8 @@ fn seed_items() -> Vec<OrbitItemInput> {
             icon: "NotebookText".to_string(),
             accent: "#5cc8ff".to_string(),
             favorite: true,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         },
         OrbitItemInput {
             title: "OrbitStart workspace".to_string(),
@@ -1386,6 +1518,8 @@ fn seed_items() -> Vec<OrbitItemInput> {
             icon: "FolderKanban".to_string(),
             accent: "#8bd450".to_string(),
             favorite: true,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         },
         OrbitItemInput {
             title: "GitHub".to_string(),
@@ -1400,6 +1534,8 @@ fn seed_items() -> Vec<OrbitItemInput> {
             icon: "Github".to_string(),
             accent: "#ffffff".to_string(),
             favorite: false,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         },
         OrbitItemInput {
             title: "Morning workspace".to_string(),
@@ -1415,6 +1551,8 @@ fn seed_items() -> Vec<OrbitItemInput> {
             icon: "Workflow".to_string(),
             accent: "#ff7a90".to_string(),
             favorite: false,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         },
     ]
 }
@@ -3057,6 +3195,8 @@ fn item_input_from_dropped_path(path_text: &str) -> OrbitItemInput {
         icon: icon_base64.unwrap_or_else(|| icon.to_string()),
         accent: accent.to_string(),
         favorite: false,
+        path_mode: ResourcePathMode::Absolute,
+        base_path: None,
     }
 }
 
@@ -3119,14 +3259,20 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
     let id = make_id(&input.kind, &input.target);
     let now = now_string();
     let group = normalize_group_value(&input.group, &input.kind);
+    let (path_mode, base_path) = normalize_item_path_fields(
+        &input.kind,
+        input.path_mode,
+        &input.target,
+        input.base_path.as_deref(),
+    )?;
     conn.execute(
         r#"
         INSERT OR IGNORE INTO items (
             id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
-            sort_order, sub_tag
+            sort_order, sub_tag, path_mode, base_path
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14, ?15, ?16)
         "#,
         params![
             &id,
@@ -3143,6 +3289,8 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
             if input.favorite { 1 } else { 0 },
             now,
             input.sub_tag.trim(),
+            resource_path_mode_value(path_mode),
+            base_path,
         ],
     )
     .map_err(|error| format!("Failed to insert item: {error}"))?;
@@ -3158,14 +3306,20 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
     let id = make_id(&input.kind, &input.target);
     let now = now_string();
     let group = normalize_group_value(&input.group, &input.kind);
+    let (path_mode, base_path) = normalize_item_path_fields(
+        &input.kind,
+        input.path_mode,
+        &input.target,
+        input.base_path.as_deref(),
+    )?;
     conn.execute(
         r#"
         INSERT INTO items (
             id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
-            sort_order, sub_tag
+            sort_order, sub_tag, path_mode, base_path
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14, ?15, ?16)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             subtitle = excluded.subtitle,
@@ -3193,6 +3347,8 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
             if input.favorite { 1 } else { 0 },
             now,
             input.sub_tag.trim(),
+            resource_path_mode_value(path_mode),
+            base_path,
         ],
     )
     .map_err(|error| format!("Failed to upsert scanned item: {error}"))?;
@@ -3204,7 +3360,8 @@ fn get_item(conn: &Connection, id: &str) -> Result<Option<OrbitItem>, String> {
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag,
+               path_mode, base_path
         FROM items
         WHERE id = ?1
         "#,
@@ -3219,7 +3376,8 @@ fn get_item_by_target(conn: &Connection, target: &str) -> Result<Option<OrbitIte
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag,
+               path_mode, base_path
         FROM items
         WHERE target = ?1
         "#,
@@ -3320,6 +3478,24 @@ fn merge_existing_item(
     get_item(conn, &existing.id)?.ok_or_else(|| "Item not found after merge".to_string())
 }
 
+fn resource_path_mode_value(mode: ResourcePathMode) -> &'static str {
+    match mode {
+        ResourcePathMode::Absolute => "absolute",
+        ResourcePathMode::DataRelative => "data-relative",
+        ResourcePathMode::WorkspaceRelative => "workspace-relative",
+    }
+}
+
+fn resource_path_mode_from_database(value: String) -> ResourcePathMode {
+    match value.trim() {
+        "data-relative" | "dataRelative" | "data_relative" => ResourcePathMode::DataRelative,
+        "workspace-relative" | "workspaceRelative" | "workspace_relative" => {
+            ResourcePathMode::WorkspaceRelative
+        }
+        _ => ResourcePathMode::Absolute,
+    }
+}
+
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
     let aliases_json: String = row.get(6)?;
     let tags_json: String = row.get(7)?;
@@ -3328,6 +3504,8 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
     let sort_order: i64 = row.get(13)?;
     let arguments: String = row.get(14)?;
     let sub_tag: String = row.get(15)?;
+    let path_mode = resource_path_mode_from_database(row.get::<_, String>(16)?);
+    let base_path: Option<String> = row.get(17)?;
 
     Ok(OrbitItem {
         id: row.get(0)?,
@@ -3346,6 +3524,8 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
         last_launched_at: row.get(12)?,
         sort_order,
         sub_tag,
+        path_mode,
+        base_path,
     })
 }
 
@@ -3354,7 +3534,8 @@ fn all_items(conn: &Connection) -> Result<Vec<OrbitItem>, String> {
         .prepare(
             r#"
             SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-                   icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
+                   icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag,
+                   path_mode, base_path
             FROM items
             ORDER BY sort_order ASC, title COLLATE NOCASE ASC
             "#,
@@ -5491,6 +5672,12 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
     let id = item.id.clone();
     let now = now_string();
     let group = normalize_group_value(&item.group, &item.kind);
+    let (path_mode, base_path) = normalize_item_path_fields(
+        &item.kind,
+        item.path_mode,
+        &item.target,
+        item.base_path.as_deref(),
+    )?;
     conn.execute(
         r#"
         UPDATE items
@@ -5508,7 +5695,9 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             last_launched_at = ?13,
             updated_at = ?14,
             arguments = ?15,
-            sub_tag = ?16
+            sub_tag = ?16,
+            path_mode = ?17,
+            base_path = ?18
         WHERE id = ?1
         "#,
         params![
@@ -5528,6 +5717,8 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             now,
             item.arguments,
             item.sub_tag.trim(),
+            resource_path_mode_value(path_mode),
+            base_path,
         ],
     )
     .map_err(|error| format!("Failed to update item: {error}"))?;
@@ -5553,12 +5744,16 @@ fn launch_item(app: tauri::AppHandle, id: String) -> Result<String, String> {
     let conn = open_db()?;
     let item = get_item(&conn, &id)?.ok_or_else(|| "Item not found".to_string())?;
     if item.kind == "action_chain" {
+        if item.path_mode != ResourcePathMode::Absolute {
+            return Err("Action-chain resources must use the absolute path mode".to_string());
+        }
         launch_action_chain(&item.target)?;
     } else {
+        let target = resolve_item_target(&item)?;
         if !item.arguments.trim().is_empty() {
-            launch_executable_with_args(&item.target, &item.arguments)?;
+            launch_executable_with_args(&target, &item.arguments)?;
         } else {
-            launch_target(item.target.clone())?;
+            launch_target(target)?;
         }
     }
     let now = now_string();
@@ -5824,6 +6019,17 @@ fn reveal_target(target: String) -> Result<String, String> {
         return launch_target(target);
     }
 
+    // The UI historically supplies only a target string here.  Resolve it
+    // through the catalog when it belongs to a stored relative-path resource,
+    // while retaining the legacy direct-path behaviour for all other callers.
+    let target = match open_db() {
+        Ok(conn) => match get_item_by_target(&conn, &target)? {
+            Some(item) => resolve_item_target(&item)?,
+            None => target,
+        },
+        Err(_) => target,
+    };
+
     #[cfg(target_os = "windows")]
     {
         let cleaned = target_path_without_arguments(&target);
@@ -5850,6 +6056,13 @@ fn reveal_target(target: String) -> Result<String, String> {
     }
 
     Err(format!("Cannot reveal target: {target}"))
+}
+
+#[tauri::command]
+fn get_item_path_status(id: String) -> Result<ResourcePathStatusReport, String> {
+    let conn = open_db()?;
+    let item = get_item(&conn, &id)?.ok_or_else(|| "Item not found".to_string())?;
+    item_path_status(&item)
 }
 
 fn shortcut_roots() -> Vec<PathBuf> {
@@ -5969,6 +6182,8 @@ fn shortcut_cache_entry_to_input(entry: &ShortcutCacheEntry) -> OrbitItemInput {
         icon: "AppWindow".to_string(),
         accent: "#5cc8ff".to_string(),
         favorite: false,
+        path_mode: ResourcePathMode::Absolute,
+        base_path: None,
     }
 }
 
@@ -6081,6 +6296,7 @@ fn scan_shortcuts_native_cached() -> Result<Vec<OrbitItemInput>, String> {
 #[cfg(all(test, target_os = "windows"))]
 mod shortcut_scan_tests {
     use super::*;
+    use std::collections::HashSet;
     use std::time::Instant;
 
     #[test]
@@ -6108,7 +6324,15 @@ mod shortcut_scan_tests {
                 row.get(0)
             })
             .expect("shortcut cache should be queryable");
-        assert_eq!(cached_rows as usize, first.len());
+        let unique_shortcut_paths = first
+            .iter()
+            .map(|item| item.target.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            cached_rows as usize,
+            unique_shortcut_paths.len(),
+            "cache rows are keyed by shortcut path, while overlapping scan roots may yield duplicate previews"
+        );
 
         let second_started = Instant::now();
         let second = scan_shortcuts_native_cached_with_conn(&mut conn)
@@ -6195,6 +6419,8 @@ fn collect_bookmarks(node: &serde_json::Value, out: &mut Vec<OrbitItemInput>) {
             icon: "Globe".to_string(),
             accent: "#37d6bf".to_string(),
             favorite: false,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         });
     }
 
@@ -6548,6 +6774,8 @@ mod import_batch_tests {
             icon: "AppWindow".to_string(),
             accent: "#5cc8ff".to_string(),
             favorite: false,
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         }
     }
 
@@ -6708,7 +6936,7 @@ fn set_hotkey_behavior(app: tauri::AppHandle, behavior: String) -> Result<AppSet
 fn export_catalog_json() -> Result<ExportResult, String> {
     let conn = open_db()?;
     let export = CatalogExport {
-        version: 3,
+        version: 4,
         exported_at: now_string(),
         items: all_items(&conn)?,
         groups: all_groups(&conn)?,
@@ -6767,6 +6995,12 @@ fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, 
     let aliases = serde_json::to_string(&item.aliases).unwrap_or_else(|_| "[]".to_string());
     let tags = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
     let now = now_string();
+    let (path_mode, base_path) = normalize_item_path_fields(
+        &item.kind,
+        item.path_mode,
+        &item.target,
+        item.base_path.as_deref(),
+    )?;
 
     if let Some(existing) = get_item_by_target(conn, &item.target)? {
         conn.execute(
@@ -6786,7 +7020,9 @@ fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, 
                 updated_at = ?13,
                 sort_order = ?14,
                 arguments = ?15,
-                sub_tag = ?16
+                sub_tag = ?16,
+                path_mode = ?17,
+                base_path = ?18
             WHERE id = ?1
             "#,
             params![
@@ -6806,6 +7042,8 @@ fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, 
                 item.sort_order,
                 &item.arguments,
                 item.sub_tag.trim(),
+                resource_path_mode_value(path_mode),
+                base_path,
             ],
         )
         .map_err(|error| format!("Failed to restore imported resource: {error}"))?;
@@ -6818,9 +7056,9 @@ fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, 
         INSERT INTO items (
             id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
-            sort_order, sub_tag
+            sort_order, sub_tag, path_mode, base_path
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17, ?18, ?19)
         "#,
         params![
             &id,
@@ -6840,6 +7078,8 @@ fn restore_catalog_item(conn: &Connection, item: &OrbitItem) -> Result<(String, 
             now,
             item.sort_order,
             item.sub_tag.trim(),
+            resource_path_mode_value(path_mode),
+            base_path,
         ],
     )
     .map_err(|error| format!("Failed to insert imported resource: {error}"))?;
@@ -7071,6 +7311,8 @@ mod catalog_import_tests {
             last_launched_at: Some("123456789".to_string()),
             sort_order: -42,
             sub_tag: "Imported/Subtag".to_string(),
+            path_mode: ResourcePathMode::Absolute,
+            base_path: None,
         }
     }
 
@@ -7106,6 +7348,8 @@ mod catalog_import_tests {
                 icon: "AppWindow".to_string(),
                 accent: "#ffffff".to_string(),
                 favorite: false,
+                path_mode: ResourcePathMode::Absolute,
+                base_path: None,
             },
         )
         .expect("existing item should be inserted");
@@ -7202,6 +7446,41 @@ mod catalog_import_tests {
     }
 
     #[test]
+    fn preserves_data_and_workspace_relative_path_fields_during_catalog_import() {
+        let mut data_relative = imported_item("data-relative", r"resources\tools\tool.exe");
+        data_relative.path_mode = ResourcePathMode::DataRelative;
+        let mut workspace_relative = imported_item("workspace-relative", r"bin\tool.exe");
+        workspace_relative.path_mode = ResourcePathMode::WorkspaceRelative;
+        workspace_relative.base_path = Some(r"workspaces\demo".to_string());
+
+        let mut conn = Connection::open_in_memory().expect("in-memory database should open");
+        init_db(&mut conn).expect("in-memory database should initialize");
+        import_catalog_export_with_conn(
+            &mut conn,
+            empty_catalog(vec![data_relative, workspace_relative]),
+        )
+        .expect("relative-path resources should import");
+
+        let data_item = get_item_by_target(&conn, r"resources\tools\tool.exe")
+            .expect("data-relative item query should succeed")
+            .expect("data-relative item should be restored");
+        assert_eq!(data_item.path_mode, ResourcePathMode::DataRelative);
+        assert_eq!(data_item.base_path, None);
+
+        let workspace_item = get_item_by_target(&conn, r"bin\tool.exe")
+            .expect("workspace-relative item query should succeed")
+            .expect("workspace-relative item should be restored");
+        assert_eq!(
+            workspace_item.path_mode,
+            ResourcePathMode::WorkspaceRelative
+        );
+        assert_eq!(
+            workspace_item.base_path.as_deref(),
+            Some(r"workspaces\demo")
+        );
+    }
+
+    #[test]
     fn accepts_bom_prefixed_version_two_exports_without_groups() {
         let export = empty_catalog(vec![imported_item(
             "legacy-id",
@@ -7213,6 +7492,10 @@ mod catalog_import_tests {
             .as_object_mut()
             .expect("catalog should be an object")
             .remove("groups");
+        value["items"][0]
+            .as_object_mut()
+            .expect("legacy item should be an object")
+            .remove("pathMode");
         let json = format!(
             "\u{feff}{}",
             serde_json::to_string(&value).expect("legacy catalog should serialize")
@@ -7221,6 +7504,7 @@ mod catalog_import_tests {
         assert_eq!(parsed.version, 2);
         assert!(parsed.groups.is_empty());
         assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].path_mode, ResourcePathMode::Absolute);
 
         let mut conn = Connection::open_in_memory().expect("in-memory database should open");
         init_db(&mut conn).expect("in-memory database should initialize");
@@ -7337,7 +7621,7 @@ fn ensure_local_templates() -> Result<(), String> {
         .map_err(|error| format!("Failed to write workspaces plugin source: {error}"))?;
         fs::write(
             workspaces_plugin_root.join("orbitstart-plugin-api.d.ts"),
-            hello_plugin_api_types(),
+            workspaces_plugin_api_types(),
         )
         .map_err(|error| format!("Failed to write workspaces plugin API types: {error}"))?;
         fs::write(
@@ -9637,6 +9921,7 @@ pub fn run() {
             launch_target,
             launch_target_with_args,
             reveal_target,
+            get_item_path_status,
             scan_shortcuts,
             scan_browser_bookmarks,
             update_global_hotkey,
@@ -9758,7 +10043,14 @@ fn workspaces_plugin_manifest() -> &'static str {
   "builtin": false,
   "permissions": [
     { "id": "catalog:read", "label": "读取已有资源列表", "risk": "medium" },
-    { "id": "shell:open", "label": "启动文件、程序与目标", "risk": "medium" },
+    { "id": "launcher:item", "label": "启动已保存资源", "risk": "medium" },
+    { "id": "launcher:target", "label": "启动配置目标", "risk": "high" },
+    { "id": "shell:script-file", "label": "运行选定脚本文件", "risk": "high" },
+    { "id": "shell:inline-script", "label": "运行内联脚本内容", "risk": "high" },
+    { "id": "filesystem:exists", "label": "检查路径是否存在", "risk": "medium" },
+    { "id": "network:probe", "label": "探测端口和网址", "risk": "medium" },
+    { "id": "process:read", "label": "检查进程运行状态", "risk": "medium" },
+    { "id": "window:layout", "label": "恢复窗口布局", "risk": "high" },
     { "id": "ui:toast", "label": "显示通知消息", "risk": "low" },
     { "id": "storage:plugin", "label": "读写本插件的本地存储数据", "risk": "low" }
   ],
@@ -9776,8 +10068,143 @@ fn workspaces_plugin_source() -> &'static str {
     include_str!("../../plugins/workspaces/main.ts")
 }
 
+fn workspaces_plugin_api_types() -> &'static str {
+    r#"export interface OrbitPlugin {
+  activate(ctx: OrbitPluginContext): void | Promise<void>;
+  deactivate?(): void | Promise<void>;
+}
+
+export interface OrbitPluginContext {
+  commands: { registerCommand(command: RegisteredCommand): () => void };
+  search: { registerProvider(id: string, provider: SearchProvider): () => void };
+  ui: { toast(message: string): void };
+  storage: PluginStorage;
+  launcher: WorkspaceLauncher;
+}
+
+export interface RegisteredCommand {
+  id: string;
+  title: string;
+  subtitle: string;
+  icon: string;
+  keywords: string[];
+  run(): void | Promise<void>;
+}
+
+export type SearchProvider = (query: string) => SearchResult[] | Promise<SearchResult[]>;
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  subtitle: string;
+  icon: string;
+  source: string;
+  actionLabel: string;
+  run?(): void | Promise<void>;
+}
+
+export interface PluginStorage {
+  get<T = unknown>(key: string, fallbackValue?: T): Promise<T | null>;
+  set<T = unknown>(key: string, value: T): Promise<boolean>;
+  remove(key: string): Promise<boolean>;
+  list(): Promise<Array<{ key: string; value: unknown }>>;
+}
+
+export interface WorkspaceLauncher {
+  launchItem(id: string): Promise<boolean>;
+  launchTarget(target: string, arguments?: string, workingDirectory?: string): Promise<boolean>;
+  runScript(scriptType: string, path?: string | null, content?: string | null): Promise<boolean>;
+  checkProcessRunning(processName: string): Promise<boolean>;
+  checkPortOpen(address: string): Promise<boolean>;
+  checkPathExists(path: string): Promise<boolean>;
+  checkUrlAccessible(url: string): Promise<boolean>;
+  applyWindowLayout(layout: WorkspaceWindowLayout): Promise<boolean>;
+}
+
+export interface WorkspaceWindowLayout {
+  processName: string;
+  windowTitle?: string | null;
+  executablePath?: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isMaximized?: boolean | null;
+  capturedAt: string;
+  alwaysOnTop?: boolean | null;
+}
+"#
+}
+
 fn workspaces_plugin_readme() -> &'static str {
-    "Workspaces plugin for OrbitStart."
+    "Workspaces plugin for OrbitStart. Its launch, script, probe, process, path, and window-layout permissions are intentionally granted separately."
+}
+
+#[cfg(test)]
+mod workspaces_plugin_manifest_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn permission_ids(manifest: &PluginManifest) -> BTreeSet<String> {
+        manifest
+            .permissions
+            .iter()
+            .map(|permission| permission.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn workspaces_manifest_uses_only_the_granular_launcher_permissions() {
+        let generated: PluginManifest = serde_json::from_str(workspaces_plugin_manifest())
+            .expect("generated workspaces manifest should be valid JSON");
+        let checked_in: PluginManifest =
+            serde_json::from_str(include_str!("../../plugins/workspaces/plugin.json"))
+                .expect("checked-in workspaces manifest should be valid JSON");
+        let expected = [
+            "catalog:read",
+            "launcher:item",
+            "launcher:target",
+            "shell:script-file",
+            "shell:inline-script",
+            "filesystem:exists",
+            "network:probe",
+            "process:read",
+            "window:layout",
+            "ui:toast",
+            "storage:plugin",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(permission_ids(&generated), expected);
+        assert_eq!(permission_ids(&checked_in), expected);
+        assert!(!permission_ids(&generated).contains("shell:open"));
+        assert!(generated
+            .permissions
+            .iter()
+            .any(|permission| permission.id == "shell:inline-script" && permission.risk == "high"));
+    }
+
+    #[test]
+    fn workspaces_generated_api_types_cover_its_launcher_calls() {
+        let api_types = workspaces_plugin_api_types();
+        for method in [
+            "launchItem",
+            "launchTarget",
+            "runScript",
+            "checkProcessRunning",
+            "checkPortOpen",
+            "checkPathExists",
+            "checkUrlAccessible",
+            "applyWindowLayout",
+        ] {
+            assert!(
+                api_types.contains(method),
+                "missing launcher API type: {method}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

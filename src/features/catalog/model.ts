@@ -264,6 +264,8 @@ export function inputFromItem(item: OrbitItem): OrbitItemInput {
     subTag: item.subTag ?? "",
     icon: item.icon,
     accent: item.accent,
-    favorite: item.favorite ?? false
+    favorite: item.favorite ?? false,
+    pathMode: item.pathMode ?? "absolute",
+    basePath: item.basePath
   };
 }

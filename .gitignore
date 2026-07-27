@@ -11,6 +11,10 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/**/*.pdb
 .cargo/
+.tmp/
+
+# Locally built installers and update artifacts
+release-artifacts/
 
 # Raw or audit-only asset staging folders
 graph/

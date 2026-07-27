@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Validate tag and signed updater metadata
+      - name: Validate tag version
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -35,4 +35,3 @@ jobs:
             throw "Expected a v-prefixed semver tag or a semver workflow input; received '$version'."
           }
           npm run version:check -- --expect-version $version
-          npm run release:verify -- --expect-version $version
