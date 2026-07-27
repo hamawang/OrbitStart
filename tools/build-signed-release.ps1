@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [string]$SecretDirectory = $env:ORBITSTART_RELEASE_SECRET_DIR,
-  [string]$TargetDirectory
+  [string]$TargetDirectory,
+  [string]$ReleaseDirectory,
+  [switch]$SkipDefaultExecutableSync
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,7 +51,22 @@ if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
   throw "Release notes are missing for $version."
 }
 
-$releaseDirectory = Join-Path $projectRoot ("release-artifacts\signed-" + $version)
+if ([string]::IsNullOrWhiteSpace($ReleaseDirectory)) {
+  $releaseDirectory = Join-Path $projectRoot ("release-artifacts\signed-" + $version)
+} elseif ([System.IO.Path]::IsPathRooted($ReleaseDirectory)) {
+  $releaseDirectory = $ReleaseDirectory
+} else {
+  $releaseDirectory = Join-Path $projectRoot $ReleaseDirectory
+}
+$releaseDirectory = [System.IO.Path]::GetFullPath($releaseDirectory)
+$releaseArtifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "release-artifacts"))
+$releasePrefix = $releaseArtifactsRoot.TrimEnd([char[]]"\\/") + [System.IO.Path]::DirectorySeparatorChar
+if (-not $releaseDirectory.StartsWith($releasePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw "ReleaseDirectory must stay inside release-artifacts."
+}
+if (-not ([System.IO.Path]::GetFileName($releaseDirectory).StartsWith("signed-" + $version, [System.StringComparison]::OrdinalIgnoreCase))) {
+  throw "ReleaseDirectory must start with signed-$version."
+}
 if (Test-Path -LiteralPath $releaseDirectory) {
   throw "Refusing to overwrite an existing signed release directory: $releaseDirectory"
 }
@@ -75,8 +92,15 @@ try {
   $artifactName = "OrbitStart_" + $version + "_x64-setup.exe"
   $artifactPath = Join-Path $TargetDirectory ("release\bundle\nsis\" + $artifactName)
   $signaturePath = $artifactPath + ".sig"
+  $builtExecutable = Join-Path $TargetDirectory "release\orbitstart.exe"
   if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { throw "Signed installer was not generated." }
   if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf)) { throw "Updater signature was not generated." }
+  if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) { throw "Standalone OrbitStart executable was not generated." }
+
+  $builtExecutableVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($builtExecutable).ProductVersion
+  if ($builtExecutableVersion -ne $version) {
+    throw "Standalone OrbitStart executable ProductVersion does not match package.json."
+  }
 
   New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
   $publishedArtifact = Join-Path $releaseDirectory $artifactName
@@ -97,6 +121,18 @@ try {
   $hash = Get-FileHash -LiteralPath $publishedArtifact -Algorithm SHA256
   $hashPath = Join-Path $releaseDirectory ($artifactName + ".sha256")
   [System.IO.File]::WriteAllText($hashPath, ("{0} *{1}`r`n" -f $hash.Hash, $artifactName), [System.Text.UTF8Encoding]::new($false))
+
+  if (-not $SkipDefaultExecutableSync) {
+    $defaultExecutable = Join-Path $projectRoot "src-tauri\target\release\orbitstart.exe"
+    try {
+      New-Item -ItemType Directory -Path (Split-Path -Parent $defaultExecutable) -Force | Out-Null
+      Copy-Item -LiteralPath $builtExecutable -Destination $defaultExecutable -Force -ErrorAction Stop
+      Write-Output ("Synced standalone executable to " + $defaultExecutable)
+    } catch {
+      Write-Warning ("Signed release assets are valid, but the default standalone executable was not synced. Close OrbitStart and run npm.cmd run build:release-exe. " + $_.Exception.Message)
+    }
+  }
+
   $hash | Select-Object Algorithm,Hash,Path | Format-List
   Write-Output ("Wrote SHA-256 file to " + $hashPath)
   Write-Output ("Signed release artifacts are ready in " + $releaseDirectory)

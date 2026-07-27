@@ -654,6 +654,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updatingState, setUpdatingState] = useState<"idle" | "downloading" | "applying">("idle");
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
+  const [updateCheckMessage, setUpdateCheckMessage] = useState("检查 GitHub Release 中是否有可用更新。");
   const [localAuxPanel, setLocalAuxPanel] = useState<AuxPanel | null>(null);
   const [busy, setBusy] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
@@ -957,15 +958,19 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const checkForUpdates = async (manual: boolean) => {
     if (!isTauriRuntime()) {
       if (manual) {
-        setToast("当前处于浏览器开发环境，无法执行自动更新。");
+        const message = "当前处于浏览器开发环境，无法执行自动更新。";
+        setUpdateCheckMessage(message);
+        setToast(message);
       }
       return;
     }
     setIsCheckingForUpdate(true);
+    if (manual) setUpdateCheckMessage("正在检查 GitHub Release 中的更新…");
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {
+        setUpdateCheckMessage(`发现新版本 v${update.version}，请确认下载并安装。`);
         setDialog({
           type: "app-update",
           version: update.version,
@@ -974,13 +979,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
         });
       } else {
         if (manual) {
-          setToast(`当前已是最新版本 (v${APP_VERSION})`);
+          const message = `当前已是最新版本 (v${APP_VERSION})`;
+          setUpdateCheckMessage(message);
+          setToast(message);
         }
       }
     } catch (err) {
       console.error("Failed to check for updates:", err);
       if (manual) {
-        setToast(`检查更新失败：${String(err)}`);
+        const message = `检查更新失败：${String(err)}`;
+        setUpdateCheckMessage(message);
+        setToast(message);
       }
     } finally {
       setIsCheckingForUpdate(false);
@@ -1010,9 +1019,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
         }
       });
       setToast("更新包下载完成，应用即将自动重启...");
-      setTimeout(async () => {
-        const { relaunch } = await import("@tauri-apps/plugin-process");
-        await relaunch();
+      setUpdateCheckMessage("更新已安装，正在重新启动 OrbitStart…");
+      setTimeout(() => {
+        void import("@tauri-apps/plugin-process")
+          .then(({ relaunch }) => relaunch())
+          .catch((error) => {
+            console.error("Failed to relaunch after update:", error);
+            setToast(`更新已安装，但自动重启失败：${String(error)}`);
+            setUpdatingState("idle");
+          });
       }, 1500);
     } catch (err) {
       console.error("Failed to download and install update:", err);
@@ -4884,6 +4899,21 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{themes.length}</strong>主题</span>
           <span><strong>{APP_VERSION}</strong>版本</span>
         </div>
+        <div className="about-update-action">
+          <button
+            type="button"
+            className="wide-command"
+            data-testid="check-updates-button"
+            disabled={isCheckingForUpdate}
+            onClick={() => void checkForUpdates(true)}
+          >
+            <RefreshCcw size={17} aria-hidden="true" />
+            <span>{isCheckingForUpdate ? "正在检查更新…" : "检查更新"}</span>
+          </button>
+          <p className="about-update-status" data-testid="update-check-status" aria-live="polite">
+            {updateCheckMessage}
+          </p>
+        </div>
       </div>
       <div className="setting-card">
         <p className="eyebrow">Desktop Shell</p>
@@ -5024,6 +5054,67 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const renderAppDialog = () => {
     if (!dialog) return null;
     const moveGroups = visibleGroups.filter((group) => group.id !== "all");
+
+    if (dialog.type === "app-update") {
+      const isInstalling = updatingState !== "idle";
+      const progressLabel = updatingState === "applying"
+        ? "正在安装更新…"
+        : updateProgress === null || updateProgress === 0
+          ? "正在准备下载更新…"
+          : `正在下载更新：${updateProgress}%`;
+      return (
+        <section
+          className="palette-backdrop centered-backdrop"
+          role="dialog"
+          aria-modal="true"
+          data-testid="updater-dialog"
+          onClick={(event) => {
+            if (!isInstalling && event.target === event.currentTarget) setDialog(null);
+          }}
+        >
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Software update</p>
+                <h2>发现新版本 v{dialog.version}</h2>
+              </div>
+              <button type="button" className="icon-action" disabled={isInstalling} onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p>确认后将下载更新并在安装完成后自动重新启动 OrbitStart。</p>
+              {dialog.body && (
+                <p className="update-release-notes" data-testid="updater-release-notes">
+                  {dialog.body}
+                </p>
+              )}
+              {isInstalling && (
+                <div className="update-progress" data-testid="updater-progress" aria-live="polite">
+                  <span>{progressLabel}</span>
+                  {updatingState === "downloading" && updateProgress !== null && (
+                    <progress value={updateProgress} max={100}>{updateProgress}%</progress>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" disabled={isInstalling} onClick={() => setDialog(null)}>稍后再说</button>
+              <button
+                type="button"
+                className="primary-action"
+                data-testid="updater-install"
+                disabled={isInstalling}
+                onClick={() => void startAppUpdate(dialog.pendingUpdate)}
+              >
+                <Download size={17} />
+                <span>{isInstalling ? progressLabel : "下载并重启"}</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      );
+    }
 
     if (dialog.type === "group-hotkey") {
       const group = groups.find((g) => g.id === dialog.groupId);

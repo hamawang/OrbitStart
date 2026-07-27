@@ -4069,6 +4069,35 @@ kbd {
   line-height: 1;
 }
 
+.about-update-action {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--space-3);
+}
+
+.about-update-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.update-release-notes {
+  white-space: pre-wrap;
+}
+
+.update-progress {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  color: var(--soft);
+  font-size: 13px;
+}
+
+.update-progress progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
 .density-compact .workspace {
   padding: var(--space-4) var(--space-5) var(--space-5);
   gap: var(--space-3);

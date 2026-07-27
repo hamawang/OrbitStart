@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc --noEmit && vite build",
+    "build:release-exe": "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --release --bin orbitstart --features custom-protocol",
     "preview": "vite preview --host 127.0.0.1 --port 1421",
     "package:plugin": "powershell -ExecutionPolicy Bypass -File tools/package-plugin.ps1",
     "tauri:dev": "tauri dev",

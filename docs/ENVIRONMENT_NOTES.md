@@ -20,6 +20,23 @@ cargo check
 npm.cmd run tauri:build
 ```
 
+To refresh the directly runnable production executable at
+`src-tauri\target\release\orbitstart.exe`, use:
+
+```powershell
+npm.cmd run build:release-exe
+```
+
+Do not substitute a bare `cargo build --release` command here. Tauri requires
+the `custom-protocol` feature for a standalone production executable; without
+it, the executable intentionally loads the development URL
+`http://127.0.0.1:1420` and will fail when the Vite server is not running.
+
+The signed-release script synchronizes its verified standalone executable back
+to this default target after packaging. If OrbitStart is running and Windows
+locks the file, the release remains valid and the script emits a warning; close
+the app, then run `npm.cmd run build:release-exe` to complete the local sync.
+
 Build outputs:
 
 ```text

@@ -315,6 +315,16 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.about-card')).toContainText('0.8.4');
   });
 
+  test('should expose a manual update check with browser-environment feedback', async ({ page }) => {
+    await page.goto('/?panel=about');
+    await page.waitForSelector('.app-shell', { timeout: 10000 });
+
+    const updateButton = page.getByTestId('check-updates-button');
+    await expect(updateButton).toBeVisible();
+    await updateButton.click();
+    await expect(page.getByTestId('update-check-status')).toContainText('当前处于浏览器开发环境');
+  });
+
   test('should display and interact with the sub-directory selection modal', async ({ page }) => {
     await page.evaluate(() => {
       window.localStorage.setItem('orbitstart.browser.items', JSON.stringify([

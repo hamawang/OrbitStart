@@ -97,6 +97,7 @@
 - 安装包 ProductVersion 和 FileVersion 均为 0.8.4；独立 minisign 验签、更新清单版本/URL/签名文件名校验及 SHA-256 复核均已通过。
 - 发现并修复了额外 `verify_updater_signature` Cargo 二进制被 Tauri 误选的打包风险：`default-run` 与本地/CI 构建命令现均显式固定为 `orbitstart`。错误的约 440 KB 本地产物被移入 `release-artifacts/signed-0.8.4-invalid-aux-binary/`，不得分发。
 - GitHub Release 附件尚未上传；仍需先提交这些版本与构建脚本改动，再发布 `v0.8.4` 的安装包、同名 `.sig` 和 `latest.json`。
+- “检查更新”按钮修订在不提升版本号的前提下另存为 `release-artifacts/signed-0.8.4-update-button-r1/`；它适用于手动覆盖安装验证，但已运行 0.8.4 的客户端不会把同版本清单视为可更新版本。
 
 ## 性能测量边界
 

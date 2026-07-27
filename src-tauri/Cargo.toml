@@ -25,4 +25,7 @@ tauri-plugin-single-instance = "2"
 
 [features]
 default = []
+# Required for a standalone production executable. Without it, Tauri treats the
+# binary as a development build and loads `build.devUrl` instead of bundled assets.
+custom-protocol = ["tauri/custom-protocol"]
 lite = []
