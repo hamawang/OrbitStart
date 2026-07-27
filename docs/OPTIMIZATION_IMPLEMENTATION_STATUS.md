@@ -13,6 +13,7 @@
 - Obsidian 路径安全：打开笔记前会 canonicalize vault 和目标文件，拒绝绝对路径、盘符/UNC、`..` 越界和解析到 vault 外的链接目标；丢失笔记会提示重新扫描。
 - 发布防回归：lockfile 根版本已同步；新增 `npm run version:check` 与 `npm run release:verify`；前端版本由 `src/appVersion.ts` 统一读取；updater 插件初始化失败会写入本地插件日志。
 - CI 与测试：新增 Windows CI 和 tag/手动触发的发布就绪校验；后者不签名或发布，但会拒绝 tag 与 updater 清单不一致的版本。`npm run test:custom` 在端口空闲时会启动并回收自己的 Vite 进程。
+- 阶段 6（前端文件拆分）：已将导入过滤、分组规范化、子标签树与资源输入转换抽离至 `src/features/catalog/model.ts`；将窗口标签解析、悬浮球主题加载和悬浮窗口挂载抽离至 `src/app/WindowRouter.tsx`；将资源分组标签、资源行、子标签区和根目录拖放区抽离至 `src/features/catalog/ResourceList.tsx`；将窗口边框缩放控件抽离至 `src/components/layout/WindowResizeEdges.tsx`。主应用组合逻辑仍保留在 `App.tsx`。
 
 ## 验证结果
 
@@ -26,16 +27,20 @@
 | `npm run test:e2e` | 通过 | 14/14，约 1.9 分钟。 |
 | `npm run test:custom` | 通过 | 验证自动启动及回收 Vite。 |
 | `npm run version:check` | 通过 | npm、lockfile、Cargo 与 Tauri 配置版本一致。 |
-| `npm run release:verify` | 有意失败 | 正确阻止 0.6.0 签名备注与 0.8.1 安装包 URL 不匹配的清单。 |
-| `npm run tauri:build -- --no-bundle --ci` | 本机受阻 | 前端构建完成；正在运行的 `src-tauri/target/release/orbitstart.exe` 锁定了 release 输出，未终止用户进程。干净 CI 或退出应用后可复测。 |
+| `npm run release:verify -- --expect-version 0.8.2` | 通过 | 0.8.2 的更新清单、安装包 URL 和真实签名备注一致。 |
+| `npm run tauri:build -- --ci` | 通过 | 已生成并签名 0.8.2 的 NSIS 和 MSI 安装包。 |
+| 阶段 6 两个前端拆分小步后的 `npm run build` | 通过 | TypeScript 检查和 Vite 构建通过；未将 bundle 体积的微小波动作为性能结论。 |
+| 阶段 6 第二小步后的 `npm run test:e2e` | 通过 | 14/14，包括悬浮球 URL 路由和 Tauri 窗口标签路由。 |
+| 阶段 6 第三小步后的 `npm run test:e2e` | 通过 | 14/14，包括子标签、外部拖放、批量选择和资源操作。 |
+| 关闭桌面应用后的 `npm.cmd run tauri:build -- --no-bundle --ci` | 通过 | release 可执行文件成功编译，已验证原先的输出文件锁不再存在。 |
 
 ## 未实施项与原因
 
 - 多入口构建第二轮：当前已完成按需加载和窄接口，但悬浮球仍共享主应用入口代码。实现独立入口需要先整理窗口路由和共享 UI 边界。
-- 大文件拆分：`src/App.tsx`、`src-tauri/src/main.rs` 和全局 CSS 仍然较大。本次只抽出了定向资源状态 helper；完整领域拆分应单独进行，避免与正确性修复混合。
+- 大文件拆分：`App.tsx` 已完成两次小范围抽离，但仍然较大；`src-tauri/src/main.rs` 和全局 CSS 也仍然较大。后续应继续按功能边界拆分，避免与正确性修复混合。
 - Portable mode：数据根目录、插件/主题携带范围、绝对路径如何转为 workspace 相对路径属于用户数据兼容策略，未在无明确策略时假定行为。
 - 插件权限与 CSP：本地插件可自声明权限并默认启用的模型仍须改造。CSP 还受 worker 的 `unsafe-eval`、Google Fonts 和 blob URL 约束；需要先确定签名、默认拒绝和网络范围策略。
-- 正式 updater 发布：`latest.json` 的签名可信备注仍指向 `OrbitStart_0.6.0_x64-setup.exe`，而 URL 指向 0.8.1。必须使用拥有者保存的原 updater 私钥生成同名 `.sig`、上传真实 release asset，并从旧版本完成升级验收；不能通过修改 JSON 或复制旧签名绕过。
+- 正式 updater 发布：0.8.2 已使用新的 updater 密钥生成真实签名并更新清单；仍需将 NSIS 安装包与同名 `.sig` 上传到 GitHub Release `v0.8.2`。旧版因信任旧公钥，必须先手动安装 0.8.2，随后版本才能恢复自动更新。
 - 主题 E2E：既有 `npm run test:e2e:themes` 超时问题未被删除或放宽；在其单独收敛前，不将主题套件标为通过。
 
 ## 性能测量边界

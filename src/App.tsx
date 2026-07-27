@@ -112,6 +112,7 @@ class SmartTouchSensor extends TouchSensor {
 }
 
 import { LocalGalaxyBackdrop } from "./components/LocalGalaxyBackdrop";
+import { WindowResizeEdges } from "./components/layout/WindowResizeEdges";
 import { APP_VERSION } from "./appVersion";
 import {
   contextMenuFromEvent,
@@ -122,9 +123,38 @@ import {
   type EditMenuCommand
 } from "./desktop/contextMenu";
 import { installDesktopShell } from "./desktop/desktopShell";
-import { closeWindow, getAppWindow, minimizeWindow, startWindowResize, toggleMaximizeWindow } from "./desktop/windowControls";
+import { closeWindow, getAppWindow, minimizeWindow, toggleMaximizeWindow } from "./desktop/windowControls";
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
 import { removeItemById, upsertItemById, upsertItemsById } from "./lib/catalogState";
+import { WindowRouter } from "./app/WindowRouter";
+import {
+  DroppableRootSection,
+  SortableGroupTab,
+  SortableResourceRow,
+  SortableSubTagSection
+} from "./features/catalog/ResourceList";
+import {
+  buildDefaultImportSelection,
+  buildImportFilterReasons,
+  buildSubTagTree,
+  cleanSubTag,
+  groupLabelsForItem,
+  inputFromItem,
+  itemHasGroup,
+  joinGroupIds,
+  listToText,
+  mergeGroupValues,
+  normalizeDroppedResourceGroup,
+  normalizeGroupValue,
+  normalizeList,
+  splitGroupIds,
+  subTagDisplayName,
+  subTagNodeTotal,
+  subTagParts,
+  uniqueList,
+  visibleSubTagItems,
+  type SubTagNode
+} from "./features/catalog/model";
 import { tripCategoryLabels } from "./lib/tripTemplates";
 import {
   shouldShowOnboarding,
@@ -146,7 +176,6 @@ import {
   listObsidianNotes,
   listObsidianTasks,
   listObsidianVaults,
-  loadWindowAppearance,
   loadSnapshot,
   openObsidianNote,
   openObsidianTodoWindow,
@@ -228,15 +257,6 @@ const OnboardingWizard = lazy(async () => {
   const module = await import("./components/OnboardingWizard");
   return { default: module.OnboardingWizard };
 });
-const FloatingBubble = lazy(async () => {
-  const module = await import("./components/FloatingBubble/FloatingBubble");
-  return { default: module.FloatingBubble };
-});
-const FloatingBubbleMenu = lazy(async () => {
-  const module = await import("./components/FloatingBubble/FloatingBubble");
-  return { default: module.FloatingBubbleMenu };
-});
-
 const tripStatusLabels: Record<string, string> = {
   todo: "待处理",
   "in-progress": "进行中",
@@ -254,81 +274,6 @@ type TodoPanelPayload = {
   relativePath?: string;
   title?: string;
 };
-type ImportFilterCode = "uninstall" | "help" | "developer" | "system" | "auxiliary" | "script" | "duplicate";
-type ImportFilterReason = {
-  code: ImportFilterCode;
-  label: string;
-};
-type ResizeEdge = "top" | "right" | "bottom" | "left" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
-
-const resizeEdgeDirections: Record<ResizeEdge, Parameters<typeof startWindowResize>[0]> = {
-  top: "North",
-  right: "East",
-  bottom: "South",
-  left: "West",
-  "top-left": "NorthWest",
-  "top-right": "NorthEast",
-  "bottom-left": "SouthWest",
-  "bottom-right": "SouthEast"
-};
-
-function WindowResizeEdges() {
-  const edges = Object.keys(resizeEdgeDirections) as ResizeEdge[];
-  const activeDrag = useRef<{
-    edge: ResizeEdge;
-    startX: number;
-    startY: number;
-    pointerId: number;
-  } | null>(null);
-
-  return (
-    <div className="window-resize-edges" aria-hidden="true">
-      {edges.map((edge) => (
-        <span
-          key={edge}
-          className={`window-resize-edge ${edge}`}
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            // Keep the browser's compatibility click events intact. Preventing the
-            // pointer-down event also suppresses the subsequent dblclick event in
-            // WebView2, which made a double-click on the resize border ineffective.
-            event.stopPropagation();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            activeDrag.current = {
-              edge,
-              startX: event.clientX,
-              startY: event.clientY,
-              pointerId: event.pointerId
-            };
-          }}
-          onPointerMove={(event) => {
-            if (!activeDrag.current || activeDrag.current.pointerId !== event.pointerId) return;
-            const dx = event.clientX - activeDrag.current.startX;
-            const dy = event.clientY - activeDrag.current.startY;
-            if (Math.hypot(dx, dy) > 3) {
-              const currentEdge = activeDrag.current.edge;
-              event.currentTarget.releasePointerCapture(event.pointerId);
-              activeDrag.current = null;
-              startWindowResize(resizeEdgeDirections[currentEdge]);
-            }
-          }}
-          onPointerUp={(event) => {
-            if (activeDrag.current && activeDrag.current.pointerId === event.pointerId) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-              activeDrag.current = null;
-            }
-          }}
-          onDoubleClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            toggleMaximizeWindow();
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
 type AppDialogState =
   | { type: "group"; value: string }
   | { type: "delete-item"; item: OrbitItem }
@@ -376,105 +321,6 @@ function getTodoPanelPayload(): TodoPanelPayload | null {
 function sectionFromPanel(panel: AuxPanel | null): SettingsSection {
   if (panel === "plugins" || panel === "themes" || panel === "about") return panel;
   return "general";
-}
-
-const importFilterLabels: Record<ImportFilterCode, string> = {
-  uninstall: "卸载/安装维护",
-  help: "帮助/文档",
-  developer: "开发/终端工具",
-  system: "系统管理工具",
-  auxiliary: "辅助组件",
-  script: "脚本入口",
-  duplicate: "重复入口"
-};
-
-const importFilterRules: Array<{ code: Exclude<ImportFilterCode, "duplicate">; pattern: RegExp }> = [
-  {
-    code: "uninstall",
-    pattern: /\b(uninstall|uninstaller|unins\d*|remove|cleanup|repair|installer|installshield|setup wizard|modify installation)\b|卸载|安装维护|修复/
-  },
-  {
-    code: "help",
-    pattern: /\b(faq|help|documentation|manual|readme|guide|tutorial|examples?|sample|samples|docs?|user guide|getting started|revision history|release history|release notes|what'?s new|whatsnew|license|licence|changelog)\b|帮助|文档|说明|示例|手册|教程|常见问题|更新历史/
-  },
-  {
-    code: "developer",
-    pattern: /\b(application verifier|appverif|developer|debug|debuggable|sdk|windows kits?|compiler|command prompt|powershell|terminal|console|shell|cmd|visual studio.*tools|native tools|package manager|nuget|git bash|node\.js command prompt|x64 native|x86 native|cross tools|rtools|msys2?|mingw|ucrt64|bash|nvidia nsight|nsight|ncu-ui|nsys-ui|profiler|redistributable|tools for desktop apps|tools for uwp apps)\b|开发者|调试|编译器|命令提示符|终端/
-  },
-  {
-    code: "system",
-    pattern: /\b(disk defragmenter|defragment|dfrgui|event viewer|services|registry editor|regedit|odbc|component services|computer management|device manager|task scheduler|windows tools|system information|performance monitor|resource monitor|print management|memory diagnostic|recovery drive|recoverydrive)\b|磁盘碎片整理|事件查看器|注册表|任务计划|设备管理/
-  },
-  {
-    code: "auxiliary",
-    pattern: /\b(7-zip file manager|7zfm|database compare|spreadsheet compare|compare|telemetry|diagnostics?|feedback|support|configuration|configurator|configure|updater?|activation|license manager|language selector|language preferences|language settings|office language|setlang|import and export settings)\b|比较|诊断|反馈|支持|配置工具|更新程序|许可证|语言首选项|语言选项/
-  }
-];
-
-function normalizeImportText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/["']/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function importSearchText(item: OrbitItemInput): string {
-  return normalizeImportText([item.title, item.subtitle, item.target, ...item.aliases].join(" "));
-}
-
-function importDuplicateKey(item: OrbitItemInput): string {
-  return normalizeImportText(`${item.title}|${item.subtitle || item.target}`);
-}
-
-function shortcutWrapperLooksLowValue(text: string): ImportFilterCode | null {
-  if (/(^|[\\/\s])(cmd|powershell|pwsh|wscript|cscript|bash|sh|msys2|mingw32|mingw64|ucrt64)\.exe\b/.test(text)) return "developer";
-  if (/(^|[\\/\s])(appverif|ncu-ui|nsys-ui|nvvp|rtools|mingw32|mingw64|ucrt64)\.exe\b/.test(text)) return "developer";
-  if (/(^|[\\/\s])(appvlp|dfrgui|mmc|control|rundll32|regedit|eventvwr|services|recoverydrive)\.exe\b/.test(text)) return "system";
-  if (/(^|[\\/\s])(7zfm|setlang)\.exe\b/.test(text)) return "auxiliary";
-  if (/\.(bat|cmd|ps1|vbs|ahk)(\s|$)/.test(text)) return "script";
-  if (/\.(chm|hlp|pdf|txt|rtf|htm|html|url)(\s|$)/.test(text)) return "help";
-  return null;
-}
-
-function shortcutImportFilterReason(item: OrbitItemInput): ImportFilterReason | null {
-  const text = importSearchText(item);
-  const wrapperCode = shortcutWrapperLooksLowValue(text);
-  if (wrapperCode) return { code: wrapperCode, label: importFilterLabels[wrapperCode] };
-
-  for (const rule of importFilterRules) {
-    if (rule.pattern.test(text)) {
-      return { code: rule.code, label: importFilterLabels[rule.code] };
-    }
-  }
-
-  return null;
-}
-
-function buildImportFilterReasons(kind: "shortcuts" | "bookmarks", items: OrbitItemInput[]): Map<number, ImportFilterReason> {
-  const reasons = new Map<number, ImportFilterReason>();
-  if (kind !== "shortcuts") return reasons;
-
-  const seen = new Set<string>();
-  items.forEach((item, index) => {
-    const key = importDuplicateKey(item);
-    const baseReason = shortcutImportFilterReason(item);
-    const duplicateReason = key && seen.has(key) ? { code: "duplicate" as const, label: importFilterLabels.duplicate } : null;
-    const reason = baseReason ?? duplicateReason;
-    if (key) seen.add(key);
-    if (reason) reasons.set(index, reason);
-  });
-
-  return reasons;
-}
-
-function buildDefaultImportSelection(kind: "shortcuts" | "bookmarks", items: OrbitItemInput[]): Set<number> {
-  const filteredReasons = buildImportFilterReasons(kind, items);
-  const selected = new Set<number>();
-  items.forEach((_, index) => {
-    if (!filteredReasons.has(index)) selected.add(index);
-  });
-  return selected;
 }
 
 const iconMap = {
@@ -556,43 +402,6 @@ function makeEmptyInput(kind: ItemKind = "app"): OrbitItemInput {
   };
 }
 
-function normalizeList(value: string) {
-  return value
-    .split(/[,\n]/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function listToText(value: string[]) {
-  return value.join(", ");
-}
-
-function uniqueList(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-}
-
-function splitGroupIds(value: string) {
-  return uniqueList(value.split(","));
-}
-
-function joinGroupIds(values: string[]) {
-  return uniqueList(values).join(",");
-}
-
-function mergeGroupValues(...values: string[]) {
-  return joinGroupIds(values.flatMap(splitGroupIds));
-}
-
-function normalizeGroupValue(value: string, fallback = "") {
-  const normalized = joinGroupIds(splitGroupIds(value));
-  return normalized || fallback;
-}
-
-function normalizeDroppedResourceGroup(groupId?: string | null) {
-  const normalized = String(groupId ?? "").trim();
-  return normalized && normalized !== "all" ? normalized : undefined;
-}
-
 function dropGroupIdFromElement(target: EventTarget | Element | null) {
   const element = target instanceof Element ? target : null;
   return element?.closest<HTMLElement>("[data-resource-drop-group-id]")?.dataset.resourceDropGroupId ?? null;
@@ -600,116 +409,6 @@ function dropGroupIdFromElement(target: EventTarget | Element | null) {
 
 function dropGroupIdAtPoint(x: number, y: number) {
   return dropGroupIdFromElement(document.elementFromPoint(x, y));
-}
-
-function itemHasGroup(item: Pick<OrbitItem, "group">, groupId: string) {
-  return splitGroupIds(item.group).includes(groupId);
-}
-
-function groupLabelsForItem(item: Pick<OrbitItem, "group">, groups: OrbitGroup[]) {
-  const titleById = new Map(groups.map((group) => [group.id, group.title]));
-  return splitGroupIds(item.group).map((id) => ({ id, title: titleById.get(id) ?? id }));
-}
-
-function cleanSubTagSegment(value: string) {
-  return value.trim().replace(/[\\/]+/g, " ").replace(/\s+/g, " ");
-}
-
-function cleanSubTag(value?: string | null) {
-  return String(value ?? "")
-    .split(/[\\/]/)
-    .map(cleanSubTagSegment)
-    .filter(Boolean)
-    .join("/");
-}
-
-function subTagParts(value?: string | null) {
-  const cleaned = cleanSubTag(value);
-  return cleaned ? cleaned.split("/") : [];
-}
-
-function subTagLeafName(value: string) {
-  const parts = subTagParts(value);
-  return parts[parts.length - 1] ?? value;
-}
-
-function subTagDisplayName(value?: string | null) {
-  return subTagParts(value).join(" / ");
-}
-
-type SubTagNode = {
-  path: string;
-  name: string;
-  items: OrbitItem[];
-  children: SubTagNode[];
-};
-
-function buildSubTagTree(sourceItems: OrbitItem[], subTagOrder: string[] = []) {
-  const nodeMap = new Map<string, SubTagNode>();
-  const ensureNode = (path: string) => {
-    const cleanPath = cleanSubTag(path);
-    let node = nodeMap.get(cleanPath);
-    if (!node) {
-      node = { path: cleanPath, name: subTagLeafName(cleanPath), items: [], children: [] };
-      nodeMap.set(cleanPath, node);
-    }
-    return node;
-  };
-
-  for (const item of sourceItems) {
-    const parts = subTagParts(item.subTag);
-    if (parts.length === 0) continue;
-    let currentPath = "";
-    for (const part of parts) {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      ensureNode(currentPath);
-    }
-    ensureNode(parts.join("/")).items.push(item);
-  }
-
-  const roots: SubTagNode[] = [];
-  for (const node of nodeMap.values()) {
-    const parentPath = subTagParts(node.path).slice(0, -1).join("/");
-    if (!parentPath) {
-      roots.push(node);
-    } else {
-      ensureNode(parentPath).children.push(node);
-    }
-  }
-
-  const sortNodes = (nodes: SubTagNode[]) => {
-    nodes.sort((a, b) => {
-      const idxA = subTagOrder.indexOf(a.path);
-      const idxB = subTagOrder.indexOf(b.path);
-      if (idxA !== -1 && idxB !== -1) {
-        return idxA - idxB;
-      }
-      if (idxA !== -1) return -1;
-      if (idxB !== -1) return 1;
-      return a.name.localeCompare(b.name, "zh-Hans-CN");
-    });
-    nodes.forEach((node) => sortNodes(node.children));
-  };
-  sortNodes(roots);
-  return roots;
-}
-
-function subTagNodeTotal(node: SubTagNode): number {
-  return node.items.length + node.children.reduce((sum, child) => sum + subTagNodeTotal(child), 0);
-}
-
-function visibleSubTagItems(nodes: SubTagNode[], collapsedPaths: readonly string[]): OrbitItem[] {
-  const collapsed = new Set(collapsedPaths);
-  const items: OrbitItem[] = [];
-
-  const visit = (node: SubTagNode) => {
-    if (collapsed.has(node.path)) return;
-    items.push(...node.items);
-    node.children.forEach(visit);
-  };
-
-  nodes.forEach(visit);
-  return items;
 }
 
 function isTauriRuntime() {
@@ -722,23 +421,6 @@ function matchesItem(item: OrbitItem, query: string) {
 
 function matchesCommand(command: OrbitCommand, query: string) {
   return scoreMatchesCommand(command, query);
-}
-
-function inputFromItem(item: OrbitItem): OrbitItemInput {
-  return {
-    title: item.title,
-    subtitle: item.subtitle,
-    kind: item.kind,
-    group: item.group,
-    target: item.target,
-    arguments: item.arguments ?? "",
-    aliases: item.aliases,
-    tags: item.tags,
-    subTag: item.subTag ?? "",
-    icon: item.icon,
-    accent: item.accent,
-    favorite: item.favorite ?? false
-  };
 }
 
 function lastLaunchedText(item: OrbitItem) {
@@ -874,534 +556,8 @@ function SortableActionButton({ id, onClick, disabled, children }: SortableActio
   );
 }
 
-interface SortableGroupTabProps {
-  group: OrbitGroup;
-  activeGroup: string;
-  setActiveGroup: (id: string) => void;
-  hotkey: string | null | undefined;
-  hotkeyBinderEnabled: boolean;
-  externalDropTarget: boolean;
-}
-
-function SortableGroupTab({
-  group,
-  activeGroup,
-  setActiveGroup,
-  hotkey,
-  hotkeyBinderEnabled,
-  externalDropTarget
-}: SortableGroupTabProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: group.id,
-  });
-
-  const style: CSSProperties = {
-    transform: transform ? CSS.Transform.toString(transform) : undefined,
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-    position: "relative",
-    display: "inline-flex",
-    alignItems: "center",
-  };
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`group-tab-wrapper ${activeGroup === group.id ? "selected" : ""} ${externalDropTarget ? "external-drop-target" : ""} ${isDragging ? "dragging" : ""}`}
-      data-group-id={group.id}
-      data-resource-drop-group-id={group.id}
-      {...attributes}
-      {...listeners}
-    >
-      <button
-        type="button"
-        className={`group-tab-btn ${activeGroup === group.id ? "selected" : ""}`}
-        onClick={() => setActiveGroup(group.id)}
-      >
-        <Icon name={group.icon} size={16} />
-        <span>{group.title}</span>
-      </button>
-
-      {hotkeyBinderEnabled && hotkey && (
-        <span className="tab-hotkey-badge" onPointerDown={(e) => e.stopPropagation()}>
-          {hotkey}
-        </span>
-      )}
-    </div>
-  );
-}
-
-interface SortableResourceRowProps {
-  item: OrbitItem;
-  selectedIds: string[];
-  batchMode: boolean;
-  busy: boolean;
-  toggleSelected: (id: string, shiftKey?: boolean) => void;
-  openItem: (item: OrbitItem) => void;
-  groups: OrbitGroup[];
-  tripCounts: Record<string, number>;
-  showTripsAction: boolean;
-  setTripPanelItem: (item: OrbitItem | null) => void;
-  setTripPanelHighlightId: (id: string | null) => void;
-  toggleFavorite: (item: OrbitItem) => void;
-  setEditor: (editor: any) => void;
-  removeItem: (item: OrbitItem) => void;
-  resourceIconStyle: (item: OrbitItem) => React.CSSProperties;
-  isOverlay?: boolean;
-  isSimple?: boolean;
-  densityFactor?: number;
-}
-
-function DroppableSubTagSection({ path, children }: { path: string; children: React.ReactNode }) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `droppable-subtag-${path}`,
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      id={`droppable-subtag-wrapper-${path}`}
-      className={`subtag-droppable-wrapper ${isOver ? "drag-over" : ""}`}
-      style={{ position: "relative" }}
-    >
-      {children}
-      {isOver && (
-        <div className="droppable-overlay">
-          <span className="droppable-overlay-text">移动到此处</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface SortableSubTagSectionProps {
-  node: SubTagNode;
-  depth: number;
-  collapsedSubTagPaths: string[];
-  settings: any;
-  renderResourceCards: (items: OrbitItem[]) => React.ReactNode;
-  renderSubTagResourceSection: (node: SubTagNode, depth: number) => React.ReactNode;
-  toggleSubTagCollapsed: (path: string) => void;
-  hotkeysBoundToSubTag: Record<string, string>;
-  hotkeyBinderEnabled: boolean;
-}
-
-function SortableSubTagSection({
-  node,
-  depth,
-  collapsedSubTagPaths,
-  settings,
-  renderResourceCards,
-  renderSubTagResourceSection,
-  toggleSubTagCollapsed,
-  hotkeysBoundToSubTag,
-  hotkeyBinderEnabled,
-}: SortableSubTagSectionProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: `subtag-sortable-${node.path}`,
-  });
-
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : undefined,
-  };
-
-  const collapsed = collapsedSubTagPaths.includes(node.path);
-  const total = subTagNodeTotal(node);
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      <DroppableSubTagSection path={node.path}>
-        <section
-          className="subtag-resource-section"
-          style={{ "--subtag-depth": depth } as CSSProperties}
-        >
-          <header className="subtag-resource-head" data-folder-id={node.path}>
-            <div
-              className="subtag-drag-handle"
-              {...attributes}
-              {...listeners}
-              style={{
-                cursor: "grab",
-                display: "flex",
-                alignItems: "center",
-                marginRight: "6px",
-                color: "var(--text-muted)",
-              }}
-            >
-              <GripVertical size={14} />
-            </div>
-            <button
-              type="button"
-              className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
-              onClick={() => toggleSubTagCollapsed(node.path)}
-              aria-label={collapsed ? "展开子目录" : "收起子目录"}
-              aria-expanded={!collapsed}
-            >
-              {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-            </button>
-            <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
-              <strong>{node.name}</strong>
-              <span>{total} 个资源</span>
-              {hotkeyBinderEnabled && hotkeysBoundToSubTag[node.path] && (
-                <span className="subtag-hotkey-badge" onPointerDown={(e) => e.stopPropagation()}>
-                  {hotkeysBoundToSubTag[node.path]}
-                </span>
-              )}
-            </div>
-          </header>
-
-          {!collapsed && (
-            <div className="subtag-resource-body">
-              {node.items.length > 0 && (
-                <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
-                  {renderResourceCards(node.items)}
-                </div>
-              )}
-              <SortableContext items={node.children.map(child => `subtag-sortable-${child.path}`)} strategy={verticalListSortingStrategy}>
-                {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
-              </SortableContext>
-            </div>
-          )}
-        </section>
-      </DroppableSubTagSection>
-    </div>
-  );
-}
-
-function DroppableRootSection({ children, displayMode }: { children: React.ReactNode; displayMode: string }) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: "droppable-subtag-root",
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      className={`root-droppable-wrapper resource-list display-${displayMode} ${isOver ? "drag-over" : ""}`}
-      style={{ position: "relative" }}
-    >
-      {children}
-      {isOver && (
-        <div className="droppable-overlay">
-          <span className="droppable-overlay-text">移动到此处</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SortableResourceRow({
-  item,
-  selectedIds,
-  batchMode,
-  busy,
-  toggleSelected,
-  openItem,
-  groups,
-  tripCounts,
-  showTripsAction,
-  setTripPanelItem,
-  setTripPanelHighlightId,
-  toggleFavorite,
-  setEditor,
-  removeItem,
-  resourceIconStyle,
-  isOverlay = false,
-  isSimple = false,
-  densityFactor = 0
-}: SortableResourceRowProps) {
-  const dragDisabled = batchMode || isOverlay;
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.id,
-    disabled: dragDisabled,
-  });
-
-  const style = {
-    transform: isOverlay
-      ? "scale(1.04)"
-      : transform
-      ? `${CSS.Transform.toString(transform)} ${isDragging ? "scale(1.04)" : ""}`
-      : isDragging
-      ? "scale(1.04)"
-      : undefined,
-    transition: isOverlay ? undefined : transition,
-    zIndex: isOverlay ? 10000 : isDragging ? 100 : undefined,
-  };
-
-  const iconSize = isSimple ? (densityFactor > 0.5 ? 24 : 32) : 26;
-
-  return (
-    <article
-      ref={setNodeRef}
-      style={style}
-      className={`resource-row ${selectedIds.includes(item.id) ? "selected" : ""} ${
-        isDragging ? "placeholder" : isOverlay ? "dragging" : ""
-      } ${isSimple ? "simple-mode" : ""}`}
-      data-resource-id={item.id}
-      {...(dragDisabled ? {} : attributes)}
-      {...(dragDisabled ? {} : listeners)}
-      onDragStart={(e: React.DragEvent) => e.preventDefault()}
-    >
-      {batchMode && !isOverlay && (
-        <label className="tile-check" onPointerDown={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={selectedIds.includes(item.id)}
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleSelected(item.id, event.shiftKey);
-            }}
-            onChange={() => undefined}
-          />
-        </label>
-      )}
-      <button
-        type="button"
-        className="resource-launch"
-        onClick={(event) => (batchMode ? toggleSelected(item.id, event.shiftKey) : openItem(item))}
-        disabled={busy}
-      >
-        <span
-          className="resource-icon"
-          style={resourceIconStyle(item)}
-        >
-          <Icon name={item.icon} size={iconSize} />
-        </span>
-        <span className="resource-copy">
-          <strong>{item.title}</strong>
-          {!isSimple && <small>{item.subtitle || item.target}</small>}
-          {!isSimple && (
-            <span className="resource-group-tags" aria-label="资源标签">
-              {groupLabelsForItem(item, groups).map((group) => (
-                <em key={group.id} data-group-id={group.id}>{group.title}</em>
-              ))}
-            </span>
-          )}
-        </span>
-        {!isSimple && (
-          <span className="resource-meta-column">
-            <em>{item.launchCount} 次启动</em>
-            <small>{lastLaunchedText(item)}</small>
-          </span>
-        )}
-      </button>
-      {!batchMode && !isSimple && !isOverlay && (
-        <div className="tile-actions" onPointerDown={(e) => e.stopPropagation()}>
-          {showTripsAction && (
-            <button
-              className={`trip-action ${tripCounts[item.id] ? "has-trips" : ""}`}
-              title="Trips"
-              onClick={() => {
-                setTripPanelItem(item);
-                setTripPanelHighlightId(null);
-              }}
-              disabled={busy}
-            >
-              <Lightbulb size={15} />
-              {tripCounts[item.id] > 0 && <span className="trip-badge">{tripCounts[item.id]}</span>}
-            </button>
-          )}
-          <button
-            className={`favorite-action ${item.favorite ? "is-favorite" : ""}`}
-            title="星标"
-            onClick={() => toggleFavorite(item)}
-            disabled={busy}
-          >
-            {item.favorite ? <img src={localGalaxyAssets.icons.favoriteStar20.src} alt="" /> : <Star size={15} />}
-          </button>
-          <button title="编辑" onClick={() => setEditor({ mode: "edit", item, input: inputFromItem(item) })}>
-            <Pencil size={15} />
-          </button>
-          <button title="删除" onClick={() => removeItem(item)} disabled={busy}>
-            <Trash2 size={15} />
-          </button>
-        </div>
-      )}
-    </article>
-  );
-}
-
-function useBubbleWindowAppearance() {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [themes, setThemes] = useState<ThemeManifest[]>([]);
-
-  useEffect(() => {
-    let disposed = false;
-    const disposers: Array<() => void> = [];
-    loadWindowAppearance()
-      .then((appearance) => {
-        setSettings(appearance.settings);
-        setThemes(appearance.themes);
-      })
-      .catch(console.error);
-
-    if (!isTauriRuntime()) return;
-    void Promise.all([
-      listen<AppSettings>("orbit://bubble-settings-changed", (event) => {
-        setSettings(event.payload);
-      }),
-      listen<AppSettings>("orbit://settings-updated", (event) => {
-        setSettings(event.payload);
-      })
-    ])
-      .then((nextDisposers) => {
-        if (disposed) {
-          nextDisposers.forEach((dispose) => dispose());
-        } else {
-          disposers.push(...nextDisposers);
-        }
-      })
-      .catch(console.error);
-
-    return () => {
-      disposed = true;
-      disposers.splice(0).forEach((dispose) => dispose());
-    };
-  }, []);
-
-  return [settings, themes] as const;
-}
-
-function FloatingBubbleWrapper() {
-  const [settings, themes] = useBubbleWindowAppearance();
-
-  useEffect(() => {
-    document.body.classList.add("bubble-body");
-    document.documentElement.classList.add("bubble-html");
-    return () => {
-      document.body.classList.remove("bubble-body");
-      document.documentElement.classList.remove("bubble-html");
-    };
-  }, []);
-
-  const activeTheme = useMemo(() => {
-    return themes.find((theme) => theme.id === settings?.activeThemeId) ?? themes[0];
-  }, [settings?.activeThemeId, themes]);
-
-  useEffect(() => {
-    if (!activeTheme) return;
-    const root = document.documentElement;
-    root.dataset.theme = activeTheme.id;
-    if (activeTheme.id.startsWith("atelier-")) {
-      root.dataset.themeStyle = "atelier";
-    } else {
-      delete root.dataset.themeStyle;
-    }
-    Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
-  }, [activeTheme]);
-
-  return (
-    <Suspense fallback={null}>
-      <FloatingBubble settings={settings} />
-    </Suspense>
-  );
-}
-
-function FloatingBubbleMenuWrapper() {
-  const [settings, themes] = useBubbleWindowAppearance();
-
-  useEffect(() => {
-    document.body.classList.add("bubble-body");
-    document.documentElement.classList.add("bubble-html");
-    return () => {
-      document.body.classList.remove("bubble-body");
-      document.documentElement.classList.remove("bubble-html");
-    };
-  }, []);
-
-  const activeTheme = useMemo(() => {
-    return themes.find((theme) => theme.id === settings?.activeThemeId) ?? themes[0];
-  }, [settings?.activeThemeId, themes]);
-
-  useEffect(() => {
-    if (!activeTheme) return;
-    const root = document.documentElement;
-    root.dataset.theme = activeTheme.id;
-    if (activeTheme.id.startsWith("atelier-")) {
-      root.dataset.themeStyle = "atelier";
-    } else {
-      delete root.dataset.themeStyle;
-    }
-    Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
-  }, [activeTheme]);
-
-  return (
-    <Suspense fallback={null}>
-      <FloatingBubbleMenu settings={settings} />
-    </Suspense>
-  );
-}
-
-function getWindowLabelFromUrl(): string | null {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  const label = params.get("label");
-  if (label) return label;
-  
-  const panel = params.get("panel");
-  if (panel === "todo") return "todo-panel";
-
-  return null;
-}
-
-function getTauriWindowLabel(): string | null {
-  if (typeof window === "undefined") return null;
-  const internals = (window as any).__TAURI_INTERNALS__;
-  return internals?.metadata?.currentWindow?.label ?? null;
-}
-
 export default function App() {
-  const [windowLabel, setWindowLabel] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    let attempts = 0;
-    
-    const check = () => {
-      if (!active) return;
-      
-      const internalsReady = typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__;
-      if (internalsReady) {
-        const urlLabel = getWindowLabelFromUrl();
-        const tauriLabel = getTauriWindowLabel();
-        setWindowLabel(urlLabel || tauriLabel || "main");
-        return;
-      }
-      
-      attempts++;
-      if (attempts < 150) {
-        setTimeout(check, 10);
-      } else {
-        setWindowLabel(getWindowLabelFromUrl() || "main");
-      }
-    };
-    
-    check();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  if (windowLabel === null) {
-    return null; // Transparent loading state
-  }
-
-  if (windowLabel === "floating-bubble") {
-    return <FloatingBubbleWrapper />;
-  }
-
-  if (windowLabel === "floating-bubble-menu") {
-    return <FloatingBubbleMenuWrapper />;
-  }
-
-  return <MainApp windowLabel={windowLabel} />;
+  return <WindowRouter renderMain={(windowLabel) => <MainApp windowLabel={windowLabel} />} />;
 }
 
 interface MainAppProps {
@@ -3491,17 +2647,21 @@ export function MainApp({ windowLabel }: MainAppProps) {
             selectedIds={selectedIds}
             batchMode={batchMode}
             busy={busy}
-            toggleSelected={toggleSelected}
-            openItem={openItem}
+            onToggleSelected={toggleSelected}
+            onOpenItem={openItem}
             groups={groups}
             tripCounts={tripCounts}
             showTripsAction={tripsFeatureEnabled}
-            setTripPanelItem={setTripPanelItem}
-            setTripPanelHighlightId={setTripPanelHighlightId}
-            toggleFavorite={toggleFavorite}
-            setEditor={setEditor}
-            removeItem={removeItem}
+            onOpenTrips={(selectedItem) => {
+              setTripPanelItem(selectedItem);
+              setTripPanelHighlightId(null);
+            }}
+            onToggleFavorite={toggleFavorite}
+            onEdit={(selectedItem) => setEditor({ mode: "edit", item: selectedItem, input: inputFromItem(selectedItem) })}
+            onDelete={removeItem}
             resourceIconStyle={resourceIconStyle}
+            renderIcon={Icon}
+            formatLastLaunched={lastLaunchedText}
             isSimple={isSimple}
             densityFactor={densityFactor}
           />
@@ -3517,7 +2677,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         node={node}
         depth={depth}
         collapsedSubTagPaths={collapsedSubTagPaths}
-        settings={settings}
+        displayMode={settings?.displayMode ?? "simple"}
         renderResourceCards={renderResourceCards}
         renderSubTagResourceSection={renderSubTagResourceSection}
         toggleSubTagCollapsed={toggleSubTagCollapsed}
@@ -4572,6 +3732,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   hotkey={hotkeysBoundToGroup[group.id]}
                   hotkeyBinderEnabled={hotkeyBinderEnabled}
                   externalDropTarget={externalDropGroupId === group.id}
+                  renderIcon={Icon}
                 />
               ))}
             </SortableContext>
@@ -4686,17 +3847,21 @@ export function MainApp({ windowLabel }: MainAppProps) {
                         selectedIds={selectedIds}
                         batchMode={batchMode}
                         busy={busy}
-                        toggleSelected={toggleSelected}
-                        openItem={openItem}
+                        onToggleSelected={toggleSelected}
+                        onOpenItem={openItem}
                         groups={groups}
                         tripCounts={tripCounts}
                         showTripsAction={tripsFeatureEnabled}
-                        setTripPanelItem={setTripPanelItem}
-                        setTripPanelHighlightId={setTripPanelHighlightId}
-                        toggleFavorite={toggleFavorite}
-                        setEditor={setEditor}
-                        removeItem={removeItem}
+                        onOpenTrips={(selectedItem) => {
+                          setTripPanelItem(selectedItem);
+                          setTripPanelHighlightId(null);
+                        }}
+                        onToggleFavorite={toggleFavorite}
+                        onEdit={(selectedItem) => setEditor({ mode: "edit", item: selectedItem, input: inputFromItem(selectedItem) })}
+                        onDelete={removeItem}
                         resourceIconStyle={resourceIconStyle}
+                        renderIcon={Icon}
+                        formatLastLaunched={lastLaunchedText}
                         isOverlay={true}
                         isSimple={isSimple}
                         densityFactor={densityFactor}
@@ -6827,10 +5992,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       </>
     );
   };
-
-  if (isBubbleWindow) {
-    return <FloatingBubble settings={settings} />;
-  }
 
   if (isTodoPanelWindow) {
     return renderTodoPanelWindow();
