@@ -302,6 +302,13 @@ export interface Phase0Snapshot {
   logs: PluginLog[];
 }
 
+/** State affected by plugin activation or safe-mode changes, without a full catalog snapshot. */
+export interface PluginStateUpdate {
+  commands: OrbitCommand[];
+  plugins: OrbitPluginManifest[];
+  settings: AppSettings;
+}
+
 export interface CatalogExport {
   version: number;
   exportedAt: string;

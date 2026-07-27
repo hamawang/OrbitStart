@@ -40,7 +40,7 @@
 
 ## 历史未实施项与原因
 
-- 多入口构建第二轮：当前已完成按需加载和窄接口，但悬浮球仍共享主应用入口代码。实现独立入口需要先整理窗口路由和共享 UI 边界。
+- 多入口构建第二轮：已于本轮完成。悬浮球及其菜单使用独立 HTML/Vite 入口和窄 bridge，不再挂载完整 `App.tsx`；保留此条仅作为此前决策背景。
 - 大文件拆分：`App.tsx` 已完成两次小范围抽离，但仍然较大；`src-tauri/src/main.rs` 和全局 CSS 也仍然较大。后续应继续按功能边界拆分，避免与正确性修复混合。
 - Portable mode：数据根目录、插件/主题携带范围、绝对路径如何转为 workspace 相对路径属于用户数据兼容策略，未在无明确策略时假定行为。
 - 插件权限与 CSP：本地插件可自声明权限并默认启用的模型仍须改造。CSP 还受 worker 的 `unsafe-eval`、Google Fonts 和 blob URL 约束；需要先确定签名、默认拒绝和网络范围策略。
@@ -52,14 +52,14 @@
 ### 阶段 6：模块边界
 
 - 资源目录模型、列表、导入预览和资源编辑器已经从 App.tsx 拆出；窗口路由与边框缩放控件也已独立。
-- App.tsx 仍约 6,500 行，main.rs 仍约 10,000 行；本轮没有为了追求文件行数而做高风险的大搬迁，后续应继续按页面、命令和数据库边界拆分。
+- App.tsx 现约 6,280 行，main.rs 约 9,533 行，`Workspaces.tsx` 已降至约 2,547 行；本轮没有为了追求文件行数而做高风险的大搬迁，后续应继续按页面、命令和数据库边界拆分。
 
 ### 阶段 7：便携模式与相对资源路径
 
 - 可执行文件同级存在 portable.flag 或 OrbitStart.Data 时才启用便携数据目录；普通安装继续使用标准数据目录，绝不自动迁移或复制旧数据。
 - schema v8 为资源增加 pathMode 与 basePath；旧数据库和旧 JSON 导入默认为 absolute。
 - app、file、folder、script 可使用 data-relative 或 workspace-relative。路径解析拒绝上级目录、盘符、UNC 和 URL 前缀；启动、定位和编辑器中的路径检查均使用同一解析规则。
-- 已提供 available、missing、permission-denied、network-unavailable、invalid 状态。批量修复预览与前缀替换 UI 尚未实现，不能声称已具备自动修复功能。
+- 已提供 available、missing、permission-denied、network-unavailable、invalid 状态。数据设置页提供“检查并预览路径修复”：先分批检查本地资源，再仅对 `missing` 的绝对 app/file/folder/script 路径按用户填写的前缀生成逐项预览；相对路径、可用路径、权限错误和网络暂不可用路径不会自动替换，前端可直接转到资源编辑器进行手动修复。保存前必须选择条目并确认；确认后会先在数据目录的 `backups/` 创建 catalog JSON 备份，备份失败则不更新，再只更新已选资源的目录记录，不移动、删除或覆盖目标磁盘文件。
 
 ### 阶段 8：插件权限与 CSP
 
@@ -72,14 +72,31 @@
 - 新增 version:set 与 updater:manifest 命令：前者同步应用版本字段，后者只从真实安装包及同名签名生成更新清单，避免复制旧签名。
 - Windows CI 运行版本检查、构建、cargo fmt、cargo clippy、Rust 测试、无 bundle 桌面编译、基础 E2E、主题 E2E 与自定义浏览器检查。
 - 新增 tag 触发的 release.yml：使用 GitHub Secrets 签名、生成 latest.json、验证后将安装包、.sig 与清单上传到 GitHub Release。更新端点改为 GitHub Release 的 latest.json 附件。
-- 最新本地验证：npm run build 通过；npm run test:e2e 为 15/15；npm run test:e2e:themes 为 6/6；npm run test:custom 通过；cargo fmt 通过；cargo test 为 30/30；版本检查通过。
-- cargo clippy 可正常执行但报告 20 条既有 main.rs lint warning，因此 CI 以报告而非 -D warnings 方式运行。该技术债未被误报为本轮代码清零。
+- 最新本地验证：npm run build 通过；npm run test:plugin-security、test:performance、version:check 和 test:custom 通过；npm run test:e2e 为 21/21；npm run test:e2e:themes 为 6/6；cargo fmt 通过；cargo test 为 30/30；隔离目标目录中的 cargo build --release 通过。
+- cargo clippy 可正常执行，已从 20 条降为 9 条既有 main.rs lint warning：2 条公开 Tauri 命令参数过多提示，以及 7 条 Windows FFI 大写类型名提示。CI 继续以报告而非 -D warnings 方式运行，避免为消除提示而破坏公开 IPC 参数或 Windows ABI 命名。
+
+### 本轮追加推进
+
+- 阶段 4：新增 `floating-bubble.html` 与 `floating-bubble-menu.html` 两个 Vite 入口；Tauri 悬浮窗直接加载对应入口，入口只预加载悬浮窗 UI、设置外观和错误上报共享代码，不再加载主应用壳。
+- 阶段 5：插件启用和安全模式改为返回最小 `PluginStateUpdate` 并发出定向事件，前端只更新 commands/plugins/settings，不再为这些设置拉取完整 `CatalogSnapshot`。
+- 阶段 6：工作区页面继续拆分为列表视图、模态框、右键菜单、图模型、图标和类型模块；增加工作区编辑、资源选择、图/列表切换、右键编辑的浏览器回归覆盖。
+- 阶段 7：数据设置页的“检查并预览路径修复”已接入实际备份和逐项更新流程；只允许用户确认的缺失绝对路径前缀替换，绝不移动或删除磁盘文件。
+- 阶段 8：核心快捷方式权限改为最小 `launcher:item`；能力风险级别、插件 manifest、文档与 `test:plugin-security` 由同一契约检查器校验；废弃的禁用 updater 打包配置已删除。
+- 阶段 9：CI 与 release 就绪流程增加插件安全和性能比较工具测试；`tools/compare-performance-measurements.mjs` 可比较同场景优化前后进程采样，拒绝不同场景或不完整数据。
+- E2E 运行器只清理自己启动的 Vite 进程，并在受限时间内回收进程树和验证端口可再次绑定，避免“断言已通过但 webServer 清理超时”的 CI 误报。
 
 ### 0.8.3 打包状态
 
 - 已在隔离 `CARGO_TARGET_DIR` 中完成签名桌面构建，正式资产位于 `release-artifacts/signed-0.8.3/`：NSIS 安装包、同名 updater `.sig` 与 `latest.json` 均已生成；ProductVersion 与 FileVersion 均为 0.8.3，SHA-256 记录在同目录 `.sha256` 文件。
 - 独立 `verify_updater_signature` 已使用 `tauri.conf.json` 的公钥完成 minisign 验签；`release:verify` 已验证版本、签名文件名和更新清单 URL 一致。
 - Tauri updater 签名不是 Windows Authenticode 签名。GitHub Release 附件尚未上传，且应在上传前完成覆盖安装与更新检查的人工验收；隔离构建目录已绕开运行中旧实例对默认输出路径的锁定。
+
+### 0.8.4 打包状态
+
+- 0.8.4 已使用受保护目录中的现有 updater 密钥重新生成 NSIS 安装包、同名 `.sig`、`latest.json` 和 SHA-256 文件，正式资产位于 `release-artifacts/signed-0.8.4/`。
+- 安装包 ProductVersion 和 FileVersion 均为 0.8.4；独立 minisign 验签、更新清单版本/URL/签名文件名校验及 SHA-256 复核均已通过。
+- 发现并修复了额外 `verify_updater_signature` Cargo 二进制被 Tauri 误选的打包风险：`default-run` 与本地/CI 构建命令现均显式固定为 `orbitstart`。错误的约 440 KB 本地产物被移入 `release-artifacts/signed-0.8.4-invalid-aux-binary/`，不得分发。
+- GitHub Release 附件尚未上传；仍需先提交这些版本与构建脚本改动，再发布 `v0.8.4` 的安装包、同名 `.sig` 和 `latest.json`。
 
 ## 性能测量边界
 

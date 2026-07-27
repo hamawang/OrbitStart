@@ -27,6 +27,19 @@
 
 PowerShell 5.1 在某些中文 Windows 环境对无 BOM 的 UTF-8 脚本兼容性不稳定；该脚本已以 UTF-8 BOM 保存。若执行策略阻止本地脚本，可仅对本次子进程使用 `-ExecutionPolicy Bypass`，不会修改系统或用户策略。
 
+## 前后对比报告
+
+`tools/compare-performance-measurements.mjs` 读取两份由 `measure-processes.ps1` 生成的 JSON，并拒绝比较不同场景的数据。它会输出 Working Set、Private Memory、CPU 和受归因 WebView2 进程数的前后值、绝对差值和百分比，同时标记机器、采样配置或进程归因条件不一致的情况。
+
+```powershell
+node .\tools\compare-performance-measurements.mjs `
+  --before .\artifacts\performance\0.8.3-A-run-01.json `
+  --after .\artifacts\performance\0.8.4-A-run-01.json `
+  --output .\docs\PERFORMANCE_AFTER_OPTIMIZATION.md
+```
+
+输出文件不得覆盖已有报告；正式对比前仍需人工确认两个文件使用同一安装方式和相同测试数据集。
+
 ## 2026-07-27 非受控验证快照
 
 下列数据用于验证采样工具的最小权限回退，不是 A–E 场景，也不参与前后比较。

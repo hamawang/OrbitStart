@@ -1,6 +1,7 @@
 [package]
 name = "orbitstart"
-version = "0.8.3"
+version = "0.8.4"
+default-run = "orbitstart"
 description = "OrbitStart plugin-driven Windows launcher"
 authors = ["OrbitStart contributors"]
 edition = "2021"

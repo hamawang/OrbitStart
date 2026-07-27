@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +21,14 @@ function waitForExit(child) {
   });
 }
 
+async function waitForExitWithin(child, timeoutMs) {
+  const result = await Promise.race([
+    waitForExit(child).then((code) => ({ exited: true, code })),
+    new Promise((resolve) => setTimeout(() => resolve({ exited: false }), timeoutMs))
+  ]);
+  return result;
+}
+
 function canReachServer() {
   return new Promise((resolve) => {
     const request = http.get({ host, port, path: "/" }, (response) => {
@@ -32,6 +41,46 @@ function canReachServer() {
       resolve(false);
     });
   });
+}
+
+function isPortAvailable() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        resolve(false);
+        return;
+      }
+      reject(error);
+    });
+    probe.listen({ host, port, exclusive: true }, () => {
+      probe.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(true);
+      });
+    });
+  });
+}
+
+async function ensurePortAvailableBeforeStart() {
+  if (await isPortAvailable()) return;
+  throw new Error(
+    `Port ${port} is already in use. Refusing to terminate it because it was not started by this E2E runner.`
+  );
+}
+
+async function waitForPortRelease() {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await isPortAvailable()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `The Vite process started by this E2E runner stopped, but port ${port} did not become available within 10 seconds. Refusing to terminate any unowned process.`
+  );
 }
 
 async function waitForServer(vite) {
@@ -54,15 +103,34 @@ async function stopOwnedProcess(child, { terminateTree = false } = {}) {
       stdio: "ignore",
       windowsHide: true
     });
-    await waitForExit(taskkill);
+    const taskkillExit = await waitForExitWithin(taskkill, 5_000);
+    if (!taskkillExit.exited) {
+      console.warn(`taskkill did not exit within 5 seconds for owned process ${child.pid}; terminating taskkill.`);
+      try {
+        taskkill.kill("SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+      taskkill.unref();
+    }
   } else {
-    child.kill("SIGTERM");
+    try {
+      child.kill("SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
   }
 
-  await Promise.race([
-    waitForExit(child),
-    new Promise((resolve) => setTimeout(resolve, 10_000))
-  ]);
+  const forcedExit = await waitForExitWithin(child, 8_000);
+  if (!forcedExit.exited) {
+    console.warn(`Owned process ${child.pid} did not exit after termination was requested; terminating the owned root process.`);
+    try {
+      child.kill("SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    await waitForExitWithin(child, 1_000);
+  }
 }
 
 function streamAndWatchForSummary(child) {
@@ -99,6 +167,7 @@ let vite;
 let exitCode = 1;
 
 try {
+  await ensurePortAvailableBeforeStart();
   vite = spawn(process.execPath, [viteCli, "--host", host, "--port", String(port), "--strictPort"], {
     cwd: projectRoot,
     stdio: "inherit",
@@ -135,7 +204,15 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
 } finally {
-  await stopOwnedProcess(vite);
+  if (vite) {
+    try {
+      await stopOwnedProcess(vite, { terminateTree: true });
+      await waitForPortRelease();
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      exitCode = 1;
+    }
+  }
 }
 
 process.exitCode = exitCode;

@@ -20,7 +20,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - [ ] 执行 `powershell -ExecutionPolicy Bypass -File tools/build-signed-release.ps1`；脚本会隔离 Cargo 目标目录，因此不受运行中默认 release 输出锁定影响。
 - [ ] 确认 `release-artifacts/signed-<version>/` 中的 NSIS 安装包、同名 `.sig` 和 `latest.json` 均由本次脚本生成；脚本必须先通过独立 minisign 验签和 release 校验。
 - [ ] 上传安装包、同名 .sig 和 latest.json 到 GitHub Release v<version>。
-- [ ] 不将 `--no-sign` 或 `createUpdaterArtifacts: false` 生成的手动安装包作为 GitHub Release 或自动更新资产。
+- [ ] 不将 `--no-sign` 生成的手动安装包作为 GitHub Release 或自动更新资产；仓库中的所有 `tauri*.conf.json` 都必须保持 `createUpdaterArtifacts: true` 或不覆盖该设置，`npm run version:check` 会拒绝显式关闭更新签名的配置。
 - [ ] 若需要轮换 updater 公钥，先记录迁移原因、更新公告和手动安装路径；不要期望旧版本自动验证新密钥。
 
 ## Windows 人工验收

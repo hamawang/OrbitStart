@@ -41,7 +41,7 @@ export const PLUGIN_CAPABILITIES = {
   },
   "launcher:target": {
     description: "Launch a target path or URL supplied by the plugin.",
-    risk: "medium"
+    risk: "high"
   },
   "filesystem:exists": {
     description: "Check whether a local path exists.",

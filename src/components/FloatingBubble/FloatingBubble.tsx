@@ -5,7 +5,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { availableMonitors, currentMonitor, cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { Clock, FolderKanban, Plus, Search, Settings } from "lucide-react";
 import type { AppSettings } from "../../types";
-import { exitFloatingModeAndShowMain } from "../../lib/native";
+import { exitFloatingModeAndShowMain } from "../../bubble/native";
 import "./FloatingBubble.css";
 
 async function animateWindowPosition(

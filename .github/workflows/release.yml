@@ -32,6 +32,8 @@ jobs:
           "value=$version" >> $env:GITHUB_OUTPUT
       - run: npm ci
       - run: npm run version:check -- --expect-version ${{ steps.version.outputs.value }}
+      - run: npm run test:plugin-security
+      - run: npm run test:performance
       - run: npm run build
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml
@@ -45,7 +47,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "TAURI_SIGNING_PRIVATE_KEY is required for a release."
           }
-          npm run tauri:build -- --ci
+          npm run tauri:build -- --ci -- --bin orbitstart
       - name: Generate and validate updater manifest
         id: artifacts
         shell: pwsh
@@ -64,6 +66,10 @@ jobs:
           $signature = "$($installer.FullName).sig"
           if (-not (Test-Path -LiteralPath $signature)) {
             throw "Updater signature was not produced: $signature"
+          }
+          cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin verify_updater_signature -- "$($installer.FullName)" $signature
+          if ($LASTEXITCODE -ne 0) {
+            throw "Updater signature verification failed."
           }
           $manifest = Join-Path $env:RUNNER_TEMP "latest.json"
           node tools/create-updater-manifest.mjs --version $version --artifact "$($installer.FullName)" --signature $signature --notes-file $notes --output $manifest

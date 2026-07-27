@@ -10,6 +10,7 @@ import type {
   ObsidianVaultConfig,
   OrbitItem,
   OrbitItemInput,
+  PluginStateUpdate,
   ResourcePathStatusReport,
   Phase0Snapshot,
   PluginRuntimeSource,
@@ -823,18 +824,20 @@ export async function scanBrowserBookmarks(): Promise<OrbitItem[]> {
   }
 }
 
-export async function setPluginEnabled(id: string, enabled: boolean): Promise<Phase0Snapshot> {
+export async function setPluginEnabled(id: string, enabled: boolean): Promise<PluginStateUpdate> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_plugin_enabled", { id, enabled });
+    return await invokeNative<PluginStateUpdate>("set_plugin_enabled", { id, enabled });
   } catch (error) {
     if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
+    const plugins = snapshot.plugins.map((plugin) => (plugin.id === id ? { ...plugin, enabled } : plugin));
     const next = {
       ...snapshot,
-      plugins: snapshot.plugins.map((plugin) => (plugin.id === id ? { ...plugin, enabled } : plugin))
+      plugins
     };
     writeBrowserSnapshot(next);
-    return next;
+    const commands = snapshot.commands.filter((command) => plugins.some((plugin) => plugin.id === command.pluginId && plugin.enabled));
+    return { settings: next.settings, plugins, commands };
   }
 }
 
@@ -901,9 +904,9 @@ export async function setCloseBehavior(closeBehavior: "tray" | "exit"): Promise<
   }
 }
 
-export async function setSafeMode(enabled: boolean): Promise<Phase0Snapshot> {
+export async function setSafeMode(enabled: boolean): Promise<PluginStateUpdate> {
   try {
-    return await invokeNative<Phase0Snapshot>("set_safe_mode", { enabled });
+    return await invokeNative<PluginStateUpdate>("set_safe_mode", { enabled });
   } catch (error) {
     if (hasNativeBridge()) throw error;
     const snapshot = readBrowserSnapshot();
@@ -912,7 +915,11 @@ export async function setSafeMode(enabled: boolean): Promise<Phase0Snapshot> {
       settings: { ...snapshot.settings, safeMode: enabled }
     };
     writeBrowserSnapshot(next);
-    return next;
+    const plugins = enabled
+      ? snapshot.plugins.map((plugin) => plugin.builtin ? plugin : { ...plugin, enabled: false })
+      : snapshot.plugins;
+    const commands = snapshot.commands.filter((command) => plugins.some((plugin) => plugin.id === command.pluginId && plugin.enabled));
+    return { settings: next.settings, plugins, commands };
   }
 }
 

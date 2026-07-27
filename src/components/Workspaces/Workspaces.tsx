@@ -1,100 +1,49 @@
 import React, { useState, useEffect, useRef } from "react";
-import { 
-  Briefcase, Plus, Trash2, Settings, Play, Save, X, Search,
-  ArrowUp, ArrowDown, Edit3, Circle, CheckCircle2, 
-  AlertCircle, RefreshCw, Check, AppWindow, Globe, FolderOpen, FileText, HelpCircle,
-  TerminalSquare, Workflow, ChevronDown, ChevronUp, Clock, Copy, Clipboard
+import {
+  AlertCircle,
+  AppWindow,
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Edit3,
+  FileText,
+  FolderOpen,
+  HelpCircle,
+  Plus,
+  Save,
+  Trash2,
+  Workflow,
+  X
 } from "lucide-react";
-import type { OrbitItem } from "../../types";
 import { invoke } from "@tauri-apps/api/core";
-
-interface Workspace {
-  id: string;
-  name: string;
-  description?: string;
-  icon?: string;
-  color?: string;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-  lastLaunchedAt?: string;
-  launchCount: number;
-  hotkey?: string;
-  preventDuplicate?: boolean;
-}
-
-interface WorkspaceStep {
-  id: string;
-  workspaceId: string;
-  order: number;
-  type: "item" | "app" | "website" | "folder" | "file" | "script" | "wait";
-  itemId?: string; // If selecting from OrbitStart items
-  title: string;
-  target: string;
-  arguments?: string;
-  workingDirectory?: string;
-  failurePolicy?: "continue" | "stop";
-  enabled: boolean;
-  delayMs?: number;
-  waitCondition?: {
-    type: "time" | "process" | "port" | "path" | "url";
-    value: string;
-    timeoutMs?: number;
-  };
-  scriptConfig?: {
-    type: "bat" | "ps1";
-    content: string;
-    useFile?: boolean;
-    filePath?: string;
-  };
-  dependsOn?: string[];
-  windowLayout?: WorkspaceWindowLayout;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface WorkspaceWindowLayout {
-  processName: string;
-  windowTitle?: string;
-  executablePath?: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  isMaximized?: boolean;
-  capturedAt: string;
-  alwaysOnTop?: boolean;
-}
-
-interface WorkspacesProps {
-  pluginHost: any;
-  items: OrbitItem[];
-}
-
-const STORAGE_KEY_WORKSPACES = "orbitstart.plugin.workspaces.storage.workspaces";
-const STORAGE_KEY_STEPS = "orbitstart.plugin.workspaces.storage.steps";
-
-// Color presets for workspaces
-const COLOR_PRESETS = [
-  "#E0533C", // Orange-Red
-  "#5cc8ff", // Light Blue
-  "#8bd450", // Green
-  "#f6b95b", // Warm Orange
-  "#bf5cff", // Purple
-  "#ff7a90", // Rose
-  "#37d6bf", // Teal
-  "#a0aec0"  // Gray
-];
-
-// Icon presets for workspaces
-const ICON_PRESETS = [
-  "Briefcase",
-  "AppWindow",
-  "Globe",
-  "FolderOpen",
-  "FileText",
-  "Settings"
-];
+import { WorkspaceContextMenus } from "./WorkspaceContextMenus";
+import { WorkspaceListView } from "./WorkspaceListView";
+import {
+  DeleteWorkspaceDialog,
+  LaunchLogsDialog,
+  ResourceSelectorModal,
+  ThemedAlertDialog,
+  WindowLayoutImportDialog
+} from "./WorkspaceModals";
+import {
+  COLOR_PRESETS,
+  ICON_PRESETS,
+  STORAGE_KEY_LOGS,
+  STORAGE_KEY_STEPS,
+  STORAGE_KEY_WORKSPACES,
+  type NodeContextMenu,
+  type ThemedAlert,
+  type Workspace,
+  type WorkspaceContextMenu,
+  type WorkspaceLaunchLog,
+  type WorkspaceStep,
+  type WorkspaceWindowLayout,
+  type WorkspacesProps
+} from "./types";
+import { getWorkspaceGraphLayout } from "./workspaceGraph";
+import { getStepIcon, getWorkspaceIcon } from "./workspaceIcons";
 
 function sanitizeCommandId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_\-\.]/g, "_");
@@ -111,15 +60,15 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   const [selectorSearch, setSelectorSearch] = useState("");
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showLogsModal, setShowLogsModal] = useState(false);
-  const [launchLogs, setLaunchLogs] = useState<any[]>([]);
-  const [themedAlert, setThemedAlert] = useState<{ title: string; message: string; type: "success" | "error" | "info" } | null>(null);
+  const [launchLogs, setLaunchLogs] = useState<WorkspaceLaunchLog[]>([]);
+  const [themedAlert, setThemedAlert] = useState<ThemedAlert | null>(null);
   const [scanLayoutModalOpen, setScanLayoutModalOpen] = useState(false);
   const [scannedWindows, setScannedWindows] = useState<WorkspaceWindowLayout[]>([]);
   const [selectedWindowIndices, setSelectedWindowIndices] = useState<number[]>([]);
   const [windowBindings, setWindowBindings] = useState<{ [index: number]: string }>({});
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
-  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ x: number; y: number; workspace: Workspace } | null>(null);
-  const [nodeContextMenu, setNodeContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenu | null>(null);
+  const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenu | null>(null);
   const [copiedStep, setCopiedStep] = useState<Partial<WorkspaceStep> | null>(null);
   const graphViewportRef = useRef<HTMLDivElement | null>(null);
   const hotkeyInputRef = useRef<HTMLInputElement | null>(null);
@@ -172,7 +121,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
 
   const loadLogs = () => {
     try {
-      const raw = localStorage.getItem("orbitstart.plugin.workspaces.storage.logs");
+      const raw = localStorage.getItem(STORAGE_KEY_LOGS);
       if (raw) {
         setLaunchLogs(JSON.parse(raw));
       } else {
@@ -284,101 +233,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
     setDeleteConfirmId(id);
   };
 
-  const getGraphLayout = () => {
-    interface TreeNode {
-      id: string;
-      step?: WorkspaceStep;
-      children: TreeNode[];
-      width: number;
-      x: number;
-      y: number;
-    }
-
-    const root: TreeNode = { id: "ROOT", children: [], width: 1, x: 0, y: 0 };
-    const nodeMap: { [id: string]: TreeNode } = { ROOT: root };
-
-    editingSteps.forEach((s) => {
-      nodeMap[s.id] = { id: s.id, step: s, children: [], width: 1, x: 0, y: 0 };
-    });
-
-    editingSteps.forEach((s) => {
-      const firstDep = s.dependsOn && s.dependsOn[0];
-      const parentId = (firstDep && nodeMap[firstDep]) ? firstDep : "ROOT";
-      nodeMap[parentId].children.push(nodeMap[s.id]);
-    });
-
-    Object.values(nodeMap).forEach((node) => {
-      node.children.sort((a, b) => (a.step?.order || 0) - (b.step?.order || 0));
-    });
-
-    const calculateNodeWidth = (n: TreeNode): number => {
-      if (n.children.length === 0) {
-        n.width = 1;
-        return 1;
-      }
-      let w = 0;
-      n.children.forEach((c) => {
-        w += calculateNodeWidth(c);
-      });
-      n.width = w;
-      return w;
-    };
-    calculateNodeWidth(root);
-
-    const X_SPACING = 210;
-    const Y_SPACING = 150;
-
-    const assignNodePositions = (n: TreeNode, startX: number, depth: number) => {
-      n.y = depth * Y_SPACING + 60;
-      if (n.children.length === 0) {
-        n.x = startX + X_SPACING / 2;
-      } else if (n.children.length === 1) {
-        const child = n.children[0];
-        assignNodePositions(child, startX, depth + 1);
-        n.x = child.x;
-      } else {
-        let curX = startX;
-        const childXs: number[] = [];
-        n.children.forEach((child) => {
-          assignNodePositions(child, curX, depth + 1);
-          childXs.push(child.x);
-          curX += child.width * X_SPACING;
-        });
-        const minX = Math.min(...childXs);
-        const maxX = Math.max(...childXs);
-        n.x = (minX + maxX) / 2;
-      }
-    };
-    assignNodePositions(root, 0, 0);
-
-    const nodesList: any[] = [];
-    const edgesList: any[] = [];
-
-    Object.values(nodeMap).forEach((n) => {
-      nodesList.push({
-        id: n.id,
-        title: n.id === "ROOT" ? "启动工作区" : (n.step?.title || "未命名"),
-        type: n.id === "ROOT" ? "root" : (n.step?.type || "app"),
-        x: n.x,
-        y: n.y,
-        step: n.step
-      });
-
-      n.children.forEach((c) => {
-        edgesList.push({
-          id: `${n.id}-${c.id}`,
-          fromId: n.id,
-          toId: c.id,
-          px: n.x,
-          py: n.y,
-          cx: c.x,
-          cy: c.y
-        });
-      });
-    });
-
-    return { nodes: nodesList, edges: edgesList };
-  };
+  const getGraphLayout = () => getWorkspaceGraphLayout(editingSteps);
 
   const handleZoomToFit = () => {
     const { nodes } = getGraphLayout();
@@ -912,31 +767,6 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       });
     } finally {
       setLaunchingId(null);
-    }
-  };
-
-  // Helper to render type icon
-  const getStepIcon = (type: string) => {
-    switch (type) {
-      case "app": return <AppWindow size={16} className="text-sky-400" />;
-      case "website": return <Globe size={16} className="text-teal-400" />;
-      case "folder": return <FolderOpen size={16} className="text-green-400" />;
-      case "script": return <TerminalSquare size={16} className="text-violet-400" />;
-      case "wait": return <Workflow size={16} className="text-gold" />;
-      default: return <FileText size={16} className="text-orange-400" />;
-    }
-  };
-
-  // Helper to render preset workspace icon
-  const getWorkspaceIcon = (name: string, color?: string, size = 20) => {
-    const style = color ? { color } : undefined;
-    switch (name) {
-      case "AppWindow": return <AppWindow size={size} style={style} />;
-      case "Globe": return <Globe size={size} style={style} />;
-      case "FolderOpen": return <FolderOpen size={size} style={style} />;
-      case "FileText": return <FileText size={size} style={style} />;
-      case "Settings": return <Settings size={size} style={style} />;
-      default: return <Briefcase size={size} style={style} />;
     }
   };
 
@@ -1867,6 +1697,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                   {editorViewMode === "graph" && (() => {
                     const { nodes, edges } = getGraphLayout();
                     const selectedNode = nodes.find(n => n.id === selectedNodeId);
+                    const selectedStep = selectedNode?.step;
                     
                     const xs = nodes.map(n => n.x);
                     const ys = nodes.map(n => n.y);
@@ -2272,7 +2103,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                             {isGraphFullscreen ? "退出全屏" : "全屏"}
                           </button>
 
-                          {selectedNode && selectedNode.step && (
+                          {selectedNode && selectedStep && (
                             <div 
                               className="graph-node-details-drawer glass-panel"
                               style={{
@@ -2308,7 +2139,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 <div className="step-input" style={{ width: "100%" }}>
                                   <label style={{ fontSize: "0.7rem" }}>步骤类型</label>
                                   <select
-                                    value={selectedNode.step.type === "item" ? "item" : (selectedNode.step.itemId ? "item" : selectedNode.step.type)}
+                                    value={selectedStep.type === "item" ? "item" : (selectedStep.itemId ? "item" : selectedStep.type)}
                                     onChange={(e) => {
                                       const newType = e.target.value as any;
                                       if (newType === "item") {
@@ -2345,7 +2176,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </select>
                                 </div>
 
-                                {(selectedNode.step.type === "item" || selectedNode.step.itemId) && (
+                                {(selectedStep.type === "item" || selectedStep.itemId) && (
                                   <div className="step-input" style={{ width: "100%" }}>
                                     <label style={{ fontSize: "0.7rem" }}>关联资源</label>
                                     <button 
@@ -2357,10 +2188,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                       }}
                                       style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: "30px", background: "var(--surface-3)", border: "1px dashed var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text)", cursor: "pointer", fontSize: "0.75rem" }}
                                     >
-                                      {selectedNode.step.itemId ? (
+                                      {selectedStep.itemId ? (
                                         <>
-                                          {getStepIcon(selectedNode.step.type)}
-                                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedNode.step.title}</span>
+                                          {getStepIcon(selectedStep.type)}
+                                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedStep.title}</span>
                                         </>
                                       ) : (
                                         <>
@@ -2376,7 +2207,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   <label style={{ fontSize: "0.7rem" }}>标题</label>
                                   <input 
                                     type="text"
-                                    value={selectedNode.step.title}
+                                    value={selectedStep.title}
                                     onChange={(e) => handleUpdateStep(selectedNode.id, { title: e.target.value })}
                                     style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
                                   />
@@ -2385,7 +2216,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 <div className="step-input" style={{ width: "100%" }}>
                                   <label style={{ fontSize: "0.7rem" }}>依赖前驱节点 (决定连接关系)</label>
                                   <select
-                                    value={selectedNode.step.dependsOn && selectedNode.step.dependsOn[0] ? selectedNode.step.dependsOn[0] : "ROOT"}
+                                    value={selectedStep.dependsOn && selectedStep.dependsOn[0] ? selectedStep.dependsOn[0] : "ROOT"}
                                     onChange={(e) => {
                                       const parentId = e.target.value;
                                       if (parentId === "ROOT") {
@@ -2407,20 +2238,20 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </select>
                                 </div>
 
-                                {selectedNode.step.type !== "item" && selectedNode.step.type !== "script" && selectedNode.step.type !== "wait" && (
+                                {selectedStep.type !== "item" && selectedStep.type !== "script" && selectedStep.type !== "wait" && (
                                   <div className="step-input" style={{ width: "100%" }}>
                                     <label style={{ fontSize: "0.7rem" }}>
-                                      {selectedNode.step.type === "website" ? "网页网址" : "目标路径"}
+                                      {selectedStep.type === "website" ? "网页网址" : "目标路径"}
                                     </label>
                                     <div style={{ display: "flex", gap: "4px", width: "100%" }}>
                                       <input 
                                         type="text"
-                                        value={selectedNode.step.target}
+                                        value={selectedStep.target}
                                         onChange={(e) => handleUpdateStep(selectedNode.id, { target: e.target.value })}
-                                        placeholder={selectedNode.step.type === "website" ? "https://..." : "C:\\path\\to\\..."}
+                                        placeholder={selectedStep.type === "website" ? "https://..." : "C:\\path\\to\\..."}
                                         style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
                                       />
-                                      {selectedNode.step.type === "folder" && (
+                                      {selectedStep.type === "folder" && (
                                         <button
                                           type="button"
                                           style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
@@ -2432,7 +2263,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                           <FolderOpen size={14} />
                                         </button>
                                       )}
-                                      {(selectedNode.step.type === "app" || selectedNode.step.type === "file") && (
+                                      {(selectedStep.type === "app" || selectedStep.type === "file") && (
                                         <button
                                           type="button"
                                           style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
@@ -2448,12 +2279,12 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </div>
                                 )}
 
-                                {(selectedNode.step.type === "app" || selectedNode.step.type === "file") && (
+                                {(selectedStep.type === "app" || selectedStep.type === "file") && (
                                   <div className="step-input" style={{ width: "100%" }}>
                                     <label style={{ fontSize: "0.7rem" }}>启动参数</label>
                                     <input 
                                       type="text"
-                                      value={selectedNode.step.arguments || ""}
+                                      value={selectedStep.arguments || ""}
                                       onChange={(e) => handleUpdateStep(selectedNode.id, { arguments: e.target.value })}
                                       placeholder="例如: --nosplash --host=127.0.0.1"
                                       style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
@@ -2461,13 +2292,13 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </div>
                                 )}
 
-                                {selectedNode.step.type === "app" && (
+                                {selectedStep.type === "app" && (
                                   <div className="step-input" style={{ width: "100%" }}>
                                     <label style={{ fontSize: "0.7rem" }}>工作目录</label>
                                     <div style={{ display: "flex", gap: "4px", width: "100%" }}>
                                       <input 
                                         type="text"
-                                        value={selectedNode.step.workingDirectory || ""}
+                                        value={selectedStep.workingDirectory || ""}
                                         onChange={(e) => handleUpdateStep(selectedNode.id, { workingDirectory: e.target.value })}
                                         placeholder="默认与程序同目录"
                                         style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
@@ -2486,14 +2317,14 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </div>
                                 )}
 
-                                {selectedNode.step.type === "script" && (
+                                {selectedStep.type === "script" && (
                                   <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", background: "rgba(255,255,255,0.02)", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)" }}>
                                     <div className="step-input" style={{ width: "100%" }}>
                                       <label style={{ fontSize: "0.7rem" }}>脚本类型</label>
                                       <select
-                                        value={selectedNode.step.scriptConfig?.type || "bat"}
+                                        value={selectedStep.scriptConfig?.type || "bat"}
                                         onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                          scriptConfig: { ...(selectedNode.step.scriptConfig || { content: "", useFile: false, filePath: "" }), type: e.target.value as any } 
+                                          scriptConfig: { ...(selectedStep.scriptConfig || { content: "", useFile: false, filePath: "" }), type: e.target.value as any }
                                         })}
                                         style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
                                       >
@@ -2507,9 +2338,9 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         <input
                                           type="radio"
                                           name={`script-source-drawer-${selectedNode.id}`}
-                                          checked={!selectedNode.step.scriptConfig?.useFile}
+                                          checked={!selectedStep.scriptConfig?.useFile}
                                           onChange={() => handleUpdateStep(selectedNode.id, { 
-                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: false } 
+                                            scriptConfig: { ...(selectedStep.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: false }
                                           })}
                                         />
                                         在线编写脚本
@@ -2518,24 +2349,24 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         <input
                                           type="radio"
                                           name={`script-source-drawer-${selectedNode.id}`}
-                                          checked={selectedNode.step.scriptConfig?.useFile === true}
+                                          checked={selectedStep.scriptConfig?.useFile === true}
                                           onChange={() => handleUpdateStep(selectedNode.id, { 
-                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: true } 
+                                            scriptConfig: { ...(selectedStep.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: true }
                                           })}
                                         />
                                         执行本地脚本文件
                                       </label>
                                     </div>
 
-                                    {!selectedNode.step.scriptConfig?.useFile ? (
+                                    {!selectedStep.scriptConfig?.useFile ? (
                                       <div className="step-input" style={{ width: "100%" }}>
                                         <label style={{ fontSize: "0.7rem" }}>脚本内容</label>
                                         <textarea
-                                          value={selectedNode.step.scriptConfig?.content || ""}
+                                          value={selectedStep.scriptConfig?.content || ""}
                                           onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: false, filePath: "" }), content: e.target.value } 
+                                            scriptConfig: { ...(selectedStep.scriptConfig || { type: "bat", useFile: false, filePath: "" }), content: e.target.value }
                                           })}
-                                          placeholder={selectedNode.step.scriptConfig?.type === "ps1" ? "PowerShell script..." : "Batch script..."}
+                                          placeholder={selectedStep.scriptConfig?.type === "ps1" ? "PowerShell script..." : "Batch script..."}
                                           rows={4}
                                           style={{ width: "100%", background: "var(--field)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text)", padding: "6px", fontFamily: "monospace", fontSize: "0.75rem" }}
                                         />
@@ -2546,9 +2377,9 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         <div style={{ display: "flex", gap: "4px", width: "100%" }}>
                                           <input
                                             type="text"
-                                            value={selectedNode.step.scriptConfig?.filePath || ""}
+                                            value={selectedStep.scriptConfig?.filePath || ""}
                                             onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                              scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: e.target.value } 
+                                              scriptConfig: { ...(selectedStep.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: e.target.value }
                                             })}
                                             placeholder="C:\path\to\script"
                                             style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
@@ -2560,7 +2391,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                               const picked = await handlePickFile();
                                               if (picked) {
                                                 handleUpdateStep(selectedNode.id, { 
-                                                  scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: picked } 
+                                                  scriptConfig: { ...(selectedStep.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: picked }
                                                 });
                                               }
                                             }}
@@ -2573,14 +2404,14 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </div>
                                 )}
 
-                                {selectedNode.step.type === "wait" && (
+                                {selectedStep.type === "wait" && (
                                   <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", background: "rgba(255,255,255,0.02)", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)" }}>
                                     <div className="step-input" style={{ width: "100%" }}>
                                       <label style={{ fontSize: "0.7rem" }}>等待类型</label>
                                       <select
-                                        value={selectedNode.step.waitCondition?.type || "time"}
+                                        value={selectedStep.waitCondition?.type || "time"}
                                         onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                          waitCondition: { ...(selectedNode.step.waitCondition || { value: "", timeoutMs: 30000 }), type: e.target.value as any } 
+                                          waitCondition: { ...(selectedStep.waitCondition || { value: "", timeoutMs: 30000 }), type: e.target.value as any }
                                         })}
                                         style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
                                       >
@@ -2593,29 +2424,29 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
 
                                     <div className="step-input" style={{ width: "100%" }}>
                                       <label style={{ fontSize: "0.7rem" }}>
-                                        {selectedNode.step.waitCondition?.type === "time" ? "等待时间 (毫秒)" :
-                                         selectedNode.step.waitCondition?.type === "port" ? "端口号 (或 host:port)" : "进程名 (例如: chrome.exe)"}
+                                        {selectedStep.waitCondition?.type === "time" ? "等待时间 (毫秒)" :
+                                         selectedStep.waitCondition?.type === "port" ? "端口号 (或 host:port)" : "进程名 (例如: chrome.exe)"}
                                       </label>
                                       <input
                                         type="text"
-                                        value={selectedNode.step.waitCondition?.value || ""}
+                                        value={selectedStep.waitCondition?.value || ""}
                                         onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                          waitCondition: { ...(selectedNode.step.waitCondition || { type: "time", timeoutMs: 30000 }), value: e.target.value } 
+                                          waitCondition: { ...(selectedStep.waitCondition || { type: "time", timeoutMs: 30000 }), value: e.target.value }
                                         })}
-                                        placeholder={selectedNode.step.waitCondition?.type === "time" ? "3000" :
-                                                     selectedNode.step.waitCondition?.type === "port" ? "8080" : "app.exe"}
+                                        placeholder={selectedStep.waitCondition?.type === "time" ? "3000" :
+                                                     selectedStep.waitCondition?.type === "port" ? "8080" : "app.exe"}
                                         style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
                                       />
                                     </div>
 
-                                    {selectedNode.step.waitCondition?.type !== "time" && (
+                                    {selectedStep.waitCondition?.type !== "time" && (
                                       <div className="step-input" style={{ width: "100%" }}>
                                         <label style={{ fontSize: "0.7rem" }}>超时时间 (毫秒)</label>
                                         <input
                                           type="number"
-                                          value={selectedNode.step.waitCondition?.timeoutMs || 30000}
+                                          value={selectedStep.waitCondition?.timeoutMs || 30000}
                                           onChange={(e) => handleUpdateStep(selectedNode.id, { 
-                                            waitCondition: { ...(selectedNode.step.waitCondition || { type: "process_start", value: "" }), timeoutMs: parseInt(e.target.value) || 30000 } 
+                                            waitCondition: { ...(selectedStep.waitCondition || { type: "process_start", value: "" }), timeoutMs: parseInt(e.target.value) || 30000 }
                                           })}
                                           style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
                                         />
@@ -2624,11 +2455,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   </div>
                                 )}
 
-                                {selectedNode.step.type !== "wait" && (
+                                {selectedStep.type !== "wait" && (
                                   <div className="step-input" style={{ width: "100%" }}>
                                     <label style={{ fontSize: "0.7rem" }}>失败策略</label>
                                     <select
-                                      value={selectedNode.step.failurePolicy || "continue"}
+                                      value={selectedStep.failurePolicy || "continue"}
                                       onChange={(e) => handleUpdateStep(selectedNode.id, { failurePolicy: e.target.value as any })}
                                       style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
                                     >
@@ -2644,19 +2475,19 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                     type="number"
                                     min="0"
                                     step="100"
-                                    value={selectedNode.step.delayMs || 0}
+                                    value={selectedStep.delayMs || 0}
                                     onChange={(e) => handleUpdateStep(selectedNode.id, { delayMs: parseInt(e.target.value) || 0 })}
                                     style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
                                   />
                                 </div>
 
-                                {selectedNode.step.type !== "script" && selectedNode.step.type !== "wait" && (
+                                {selectedStep.type !== "script" && selectedStep.type !== "wait" && (
                                   <div className="step-window-layout-config" style={{ marginTop: "4px", width: "100%", background: "var(--surface-3)", padding: "10px", borderRadius: "var(--radius-sm)", border: "1px dashed var(--line)", display: "flex", flexDirection: "column", gap: "6px", pointerEvents: "auto" }}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                       <label style={{ fontSize: "0.7rem", fontWeight: "bold", color: "var(--gold)", display: "flex", alignItems: "center", gap: "4px" }}>
                                         <AppWindow size={12} /> 窗口位置布局保存
                                       </label>
-                                      {selectedNode.step.windowLayout ? (
+                                      {selectedStep.windowLayout ? (
                                         <button 
                                           type="button" 
                                           className="text-action compact-action" 
@@ -2676,24 +2507,24 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         </button>
                                       )}
                                     </div>
-                                    {selectedNode.step.windowLayout ? (
+                                    {selectedStep.windowLayout ? (
                                       <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "flex", flexDirection: "column", gap: "3px" }}>
-                                        <div><strong>坐标 (X, Y):</strong> ({selectedNode.step.windowLayout.x}, {selectedNode.step.windowLayout.y})</div>
-                                        <div><strong>尺寸 (W x H):</strong> {selectedNode.step.windowLayout.width} x {selectedNode.step.windowLayout.height}</div>
-                                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>进程名:</strong> {selectedNode.step.windowLayout.processName}</div>
-                                        {selectedNode.step.windowLayout.isMaximized && <div style={{ color: "var(--gold)" }}><strong>状态:</strong> 自动最大化</div>}
+                                        <div><strong>坐标 (X, Y):</strong> ({selectedStep.windowLayout.x}, {selectedStep.windowLayout.y})</div>
+                                        <div><strong>尺寸 (W x H):</strong> {selectedStep.windowLayout.width} x {selectedStep.windowLayout.height}</div>
+                                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>进程名:</strong> {selectedStep.windowLayout.processName}</div>
+                                        {selectedStep.windowLayout.isMaximized && <div style={{ color: "var(--gold)" }}><strong>状态:</strong> 自动最大化</div>}
                                         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
                                           <input 
                                             type="checkbox" 
-                                            id={`always-on-top-drawer-${selectedNode.step.id}`}
-                                            checked={selectedNode.step.windowLayout.alwaysOnTop === true}
+                                            id={`always-on-top-drawer-${selectedStep.id}`}
+                                            checked={selectedStep.windowLayout.alwaysOnTop === true}
                                             onChange={(e) => {
-                                              const nextLayout = { ...selectedNode.step.windowLayout, alwaysOnTop: e.target.checked };
+                                              const nextLayout = { ...selectedStep.windowLayout, alwaysOnTop: e.target.checked };
                                               handleUpdateStep(selectedNode.id, { windowLayout: nextLayout as any });
                                             }}
                                             style={{ cursor: "pointer", accentColor: "var(--gold)", width: "12px", height: "12px" }}
                                           />
-                                          <label htmlFor={`always-on-top-drawer-${selectedNode.step.id}`} style={{ margin: 0, cursor: "pointer", fontSize: "0.7rem" }}>窗口始终置顶</label>
+                                          <label htmlFor={`always-on-top-drawer-${selectedStep.id}`} style={{ margin: 0, cursor: "pointer", fontSize: "0.7rem" }}>窗口始终置顶</label>
                                         </div>
                                       </div>
                                     ) : (
@@ -2750,731 +2581,90 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
           </div>
         </div>
       ) : (
-        // WORKSPACES LIST UI
-        <div className="workspaces-list-view">
-          <div className="view-actions" style={{ display: "flex", gap: "var(--space-2)" }}>
-            <button className="primary-action" onClick={handleCreateWorkspace}>
-              <Plus size={18} /> 新建工作区
-            </button>
-            <button className="secondary-action" onClick={() => setShowLogsModal(true)}>
-              <FileText size={16} /> 历史日志
-            </button>
-          </div>
-
-          {workspaces.length === 0 ? (
-            <div className="empty-workspaces glass-panel">
-              <Briefcase size={48} className="text-muted" />
-              <h3>暂无工作区</h3>
-              <p>工作区可以将多个应用、网址、文件夹等组合在一起，并在您需要的时候一键按顺序批量启动。</p>
-              <button className="primary-action compact-action" onClick={handleCreateWorkspace}>
-                立即创建
-              </button>
-            </div>
-          ) : (
-            <div className="workspaces-grid">
-              {workspaces.map((ws) => {
-                const wsSteps = steps.filter((s) => s.workspaceId === ws.id);
-                const enabledSteps = wsSteps.filter((s) => s.enabled);
-                const isLaunching = launchingId === ws.id;
-
-                return (
-                  <div 
-                    key={ws.id} 
-                    className="workspace-card glass-panel" 
-                    style={{ borderTop: `4px solid ${ws.color || "#E0533C"}` }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setWorkspaceContextMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        workspace: ws
-                      });
-                    }}
-                  >
-                    <div className="card-top">
-                      <div className="ws-icon-circle" style={{ backgroundColor: `${ws.color}15` }}>
-                        {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 24)}
-                      </div>
-                      <div className="ws-meta">
-                        <h4>{ws.name}</h4>
-                        <p>{ws.description || "无描述"}</p>
-                      </div>
-                    </div>
-
-                    <div className="card-middle">
-                      <div className="stat-badge">
-                        <span className="stat-label">步骤数量:</span>
-                        <span className="stat-val">{enabledSteps.length} / {wsSteps.length}</span>
-                      </div>
-                      <div className="stat-badge">
-                        <span className="stat-label">启动次数:</span>
-                        <span className="stat-val">{ws.launchCount || 0}</span>
-                      </div>
-                      {ws.lastLaunchedAt && (
-                        <div className="stat-badge full-width">
-                          <span className="stat-label">上次启动:</span>
-                          <span className="stat-val">{new Date(ws.lastLaunchedAt).toLocaleString("zh-CN", { hour12: false })}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="card-bottom">
-                      <button 
-                        className={`primary-action launch-btn ${isLaunching ? "launching" : ""}`}
-                        disabled={isLaunching}
-                        onClick={() => handleLaunch(ws)}
-                      >
-                        {isLaunching ? (
-                          <>
-                            <RefreshCw size={16} className="spin-animation" /> 启动中
-                          </>
-                        ) : (
-                          <>
-                            <Play size={16} /> 启动
-                          </>
-                        )}
-                      </button>
-
-                      <div className="action-buttons">
-                        <button className="icon-button" onClick={() => handleEditWorkspace(ws)} title="编辑">
-                          <Edit3 size={16} />
-                        </button>
-                        <button className="icon-button text-danger" onClick={() => handleDeleteWorkspace(ws.id)} title="删除">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <WorkspaceListView
+          workspaces={workspaces}
+          steps={steps}
+          launchingId={launchingId}
+          onCreateWorkspace={handleCreateWorkspace}
+          onOpenLogs={() => setShowLogsModal(true)}
+          onLaunch={handleLaunch}
+          onEdit={handleEditWorkspace}
+          onDelete={handleDeleteWorkspace}
+          onContextMenu={(event, workspace) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setWorkspaceContextMenu({ x: event.clientX, y: event.clientY, workspace });
+          }}
+        />
       )}
 
-      {selectorStepId && (() => {
-        const filteredItems = items.filter((item) => {
-          const searchLower = selectorSearch.toLowerCase().trim();
-          if (!searchLower) return true;
-          return (
-            item.title.toLowerCase().includes(searchLower) ||
-            (item.target && item.target.toLowerCase().includes(searchLower))
+      <ResourceSelectorModal
+        selectorStepId={selectorStepId}
+        selectorSearch={selectorSearch}
+        items={items}
+        onClose={() => setSelectorStepId(null)}
+        onSearchChange={setSelectorSearch}
+        onUpdateStep={handleUpdateStep}
+        getStepIcon={getStepIcon}
+      />
+      <DeleteWorkspaceDialog
+        workspace={deleteConfirmId ? workspaces.find((workspace) => workspace.id === deleteConfirmId) || null : null}
+        onClose={() => setDeleteConfirmId(null)}
+        onConfirm={(workspaceId) => {
+          invoke("update_workspace_hotkey", { workspaceId, newHotkey: null }).catch((error) => {
+            console.error("Failed to unregister hotkey on delete", error);
+          });
+          saveAllData(
+            workspaces.filter((workspace) => workspace.id !== workspaceId),
+            steps.filter((step) => step.workspaceId !== workspaceId)
           );
-        });
+          setDeleteConfirmId(null);
+        }}
+        getWorkspaceIcon={getWorkspaceIcon}
+      />
+      <LaunchLogsDialog
+        isOpen={showLogsModal}
+        launchLogs={launchLogs}
+        onClose={() => setShowLogsModal(false)}
+        onClear={() => {
+          localStorage.removeItem(STORAGE_KEY_LOGS);
+          setLaunchLogs([]);
+        }}
+      />
+      <WindowLayoutImportDialog
+        isOpen={scanLayoutModalOpen}
+        scannedWindows={scannedWindows}
+        selectedWindowIndices={selectedWindowIndices}
+        windowBindings={windowBindings}
+        editingSteps={editingSteps}
+        onClose={() => setScanLayoutModalOpen(false)}
+        onSelectedWindowIndicesChange={setSelectedWindowIndices}
+        onWindowBindingsChange={setWindowBindings}
+        onImport={handleImportScannedLayouts}
+      />
+      <ThemedAlertDialog alert={themedAlert} onClose={() => setThemedAlert(null)} />
 
-        return (
-          <div className="resource-selector-overlay" onClick={() => setSelectorStepId(null)}>
-            <div className="resource-selector-modal glass-panel" onClick={(e) => e.stopPropagation()}>
-              <div className="selector-header">
-                <Search size={18} className="text-muted" />
-                <input
-                  type="text"
-                  placeholder="搜索已有应用、网页、文件夹..."
-                  value={selectorSearch}
-                  onChange={(e) => setSelectorSearch(e.target.value)}
-                  autoFocus
-                />
-                <button className="icon-button" onClick={() => setSelectorStepId(null)}>
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="selector-results">
-                <div 
-                  className="selector-result-item custom-option"
-                  onClick={() => {
-                    handleUpdateStep(selectorStepId, { itemId: undefined, title: "自定义步骤", target: "", type: "file" });
-                    setSelectorStepId(null);
-                  }}
-                >
-                  <Edit3 size={16} className="text-muted" />
-                  <div className="result-info">
-                    <span className="result-title">使用自定义路径或网址</span>
-                    <span className="result-subtitle">手动输入文件地址、命令或 HTTP 网址</span>
-                  </div>
-                </div>
-                {filteredItems.map((item) => (
-                  <div 
-                    key={item.id} 
-                    className="selector-result-item"
-                    onClick={() => {
-                      handleUpdateStep(selectorStepId, { itemId: item.id });
-                      setSelectorStepId(null);
-                    }}
-                  >
-                    {getStepIcon(item.kind)}
-                    <div className="result-info">
-                      <span className="result-title">{item.title}</span>
-                      <span className="result-subtitle">{item.target}</span>
-                    </div>
-                  </div>
-                ))}
-                {filteredItems.length === 0 && (
-                  <div className="selector-no-results">
-                    未找到匹配的资源
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {deleteConfirmId && (() => {
-        const ws = workspaces.find((w) => w.id === deleteConfirmId);
-        if (!ws) return null;
-        return (
-          <div className="resource-selector-overlay" onClick={() => setDeleteConfirmId(null)}>
-            <div className="modal-panel dialog-panel" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-head">
-                <div>
-                  <p className="eyebrow">Delete workspace</p>
-                  <h2>删除工作区</h2>
-                </div>
-                <button className="icon-action" onClick={() => setDeleteConfirmId(null)}>
-                  <X size={18} />
-                </button>
-              </div>
-              <div className="dialog-body">
-                <p className="dialog-warning">这只会从 OrbitStart 中移除该工作区，不会删除各启动步骤中关联的真实程序或文件。</p>
-                <div className="dialog-target">
-                  <div style={{ marginRight: "12px", display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "50%", background: `${ws.color}15` }}>
-                    {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 20)}
-                  </div>
-                  <span>
-                    <strong>{ws.name}</strong>
-                    <small>{ws.description || "无描述"}</small>
-                  </span>
-                </div>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="secondary-action" onClick={() => setDeleteConfirmId(null)}>取消</button>
-                <button 
-                  type="button" 
-                  className="danger-action dialog-action" 
-                  onClick={() => {
-                    invoke("update_workspace_hotkey", { workspaceId: deleteConfirmId, newHotkey: null }).catch((e) => {
-                      console.error("Failed to unregister hotkey on delete", e);
-                    });
-                    const nextWs = workspaces.filter((w) => w.id !== deleteConfirmId);
-                    const nextSteps = steps.filter((s) => s.workspaceId !== deleteConfirmId);
-                    saveAllData(nextWs, nextSteps);
-                    setDeleteConfirmId(null);
-                  }}
-                >
-                  删除
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {showLogsModal && (
-        <div className="resource-selector-overlay" onClick={() => setShowLogsModal(false)}>
-          <div className="modal-panel dialog-panel" style={{ maxWidth: "550px", width: "90%" }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">Launch logs</p>
-                <h2>启动历史日志</h2>
-              </div>
-              <button className="icon-action" onClick={() => setShowLogsModal(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            
-            <div className="dialog-body" style={{ maxHeight: "350px", overflowY: "auto", padding: "var(--space-2) var(--space-4)" }}>
-              {launchLogs.length === 0 ? (
-                <div style={{ textAlign: "center", padding: "var(--space-6) 0", color: "var(--muted)", fontSize: "0.9rem" }}>
-                  暂无启动日志记录
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                  {launchLogs.map((log: any) => (
-                    <div key={log.id} className="dialog-target" style={{ padding: "var(--space-3)", display: "flex", flexDirection: "column", gap: "var(--space-2)", alignItems: "stretch", cursor: "default" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <strong style={{ fontSize: "0.85rem", color: "var(--text)" }}>{log.workspaceName}</strong>
-                        <span 
-                          style={{ 
-                            fontSize: "0.7rem", 
-                            padding: "2px 6px", 
-                            borderRadius: "4px",
-                            background: log.status === "success" ? "rgba(46, 204, 113, 0.12)" : "rgba(231, 76, 60, 0.12)",
-                            color: log.status === "success" ? "#2ecc71" : "#e74c3c",
-                            fontWeight: 500
-                          }}
-                        >
-                          {log.status === "success" ? "启动成功" : (log.status === "partial" ? "部分成功" : "启动失败")}
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.72rem", color: "var(--muted)" }}>
-                        <span>启动时间: {new Date(log.launchedAt).toLocaleString("zh-CN")}</span>
-                        <span>耗时: {(log.durationMs / 1000).toFixed(2)} 秒</span>
-                      </div>
-                      <div style={{ fontSize: "0.72rem", color: "var(--soft)" }}>
-                        总步骤: {log.totalSteps} · 成功: {log.successSteps} · 失败: {log.failedSteps}
-                      </div>
-                      {log.errors && log.errors.length > 0 && (
-                        <div style={{ background: "rgba(231, 76, 60, 0.05)", padding: "var(--space-2)", borderRadius: "var(--radius-sm)", marginTop: "var(--space-1)", border: "1px solid rgba(231, 76, 60, 0.1)" }}>
-                          {log.errors.map((err: any, idx: number) => (
-                            <div key={idx} style={{ color: "#e74c3c", fontSize: "0.7rem", lineHeight: "1.4" }}>
-                              • <strong>{err.stepTitle}</strong>: {err.errorMsg}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            
-            <div className="modal-actions" style={{ justifyContent: "space-between" }}>
-              <button 
-                type="button" 
-                className="secondary-action" 
-                onClick={() => {
-                  localStorage.removeItem("orbitstart.plugin.workspaces.storage.logs");
-                  setLaunchLogs([]);
-                }}
-                disabled={launchLogs.length === 0}
-              >
-                清空日志
-              </button>
-              <button type="button" className="primary-action" onClick={() => setShowLogsModal(false)}>
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {scanLayoutModalOpen && (
-        <div className="resource-selector-overlay" onClick={() => setScanLayoutModalOpen(false)}>
-          <div className="modal-panel dialog-panel" style={{ maxWidth: "720px", width: "95%", maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">Import Desktop Windows</p>
-                <h2>导入/关联桌面运行窗口</h2>
-              </div>
-              <button className="icon-action" onClick={() => setScanLayoutModalOpen(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            
-            <div className="dialog-body" style={{ overflowY: "auto", maxHeight: "55vh", padding: "var(--space-3) var(--space-4)" }}>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.82rem", marginBottom: "var(--space-3)" }}>
-                系统检测到以下正在运行的窗口。您可以选择要导入/关联的窗口，并指定是新建步骤还是更新已有步骤。
-              </p>
-              
-              <div className="scanned-windows-list" style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                {scannedWindows.map((win, idx) => {
-                  const isSelected = selectedWindowIndices.includes(idx);
-                  const currentBinding = windowBindings[idx] || "new";
-                  
-                  return (
-                    <div 
-                      key={idx} 
-                      style={{ 
-                        display: "flex", 
-                        alignItems: "center", 
-                        gap: "var(--space-3)", 
-                        background: "var(--surface-3)", 
-                        padding: "10px 12px", 
-                        borderRadius: "var(--radius-sm)",
-                        border: isSelected ? "1px solid var(--gold)" : "1px solid var(--line)",
-                        transition: "all 0.2s"
-                      }}
-                    >
-                      <input 
-                        type="checkbox" 
-                        checked={isSelected}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedWindowIndices([...selectedWindowIndices, idx]);
-                          } else {
-                            setSelectedWindowIndices(selectedWindowIndices.filter(i => i !== idx));
-                          }
-                        }}
-                        style={{ width: "16px", height: "16px", cursor: "pointer", accentColor: "var(--gold)" }}
-                      />
-                      
-                      <div style={{ flexGrow: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={win.windowTitle}>
-                            {win.windowTitle || "无标题窗口"}
-                          </span>
-                          <span style={{ fontSize: "0.72rem", background: "var(--surface-4)", padding: "1px 6px", borderRadius: "3px", color: "var(--gold)" }}>
-                            {win.processName}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "3px" }}>
-                          位置: ({win.x}, {win.y}) · 尺寸: {win.width}x{win.height} {win.isMaximized ? "· 已最大化" : ""}
-                        </div>
-                      </div>
-                      
-                      <div className="step-input" style={{ width: "180px", marginBottom: 0 }}>
-                        <select
-                          value={currentBinding}
-                          onChange={(e) => setWindowBindings({ ...windowBindings, [idx]: e.target.value })}
-                          style={{ width: "100%", height: "30px", fontSize: "0.75rem" }}
-                          disabled={!isSelected}
-                        >
-                          <option value="new">🆕 新建为启动步骤</option>
-                          {editingSteps
-                            .filter(s => s.type !== "script" && s.type !== "wait")
-                            .map((s, stepIdx) => (
-                              <option key={s.id} value={s.id}>
-                                🔗 关联步骤 {stepIdx + 1}: {s.title || s.target.split(/[\\/]/).pop()}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            
-            <div className="modal-actions" style={{ borderTop: "1px solid var(--line)", paddingTop: "var(--space-3)" }}>
-              <button type="button" className="secondary-action" onClick={() => setScanLayoutModalOpen(false)}>
-                取消
-              </button>
-              <button 
-                type="button" 
-                className="primary-action" 
-                onClick={handleImportScannedLayouts}
-                disabled={selectedWindowIndices.length === 0}
-              >
-                确认导入并更新 ({selectedWindowIndices.length})
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {themedAlert && (
-        <div className="resource-selector-overlay" style={{ zIndex: 100000 }} onClick={() => setThemedAlert(null)}>
-          <div className="modal-panel dialog-panel" style={{ maxWidth: "400px", width: "90%", padding: "var(--space-5)" }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head" style={{ marginBottom: "var(--space-3)", borderBottom: "none", paddingBottom: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                {themedAlert.type === "success" && <CheckCircle2 size={24} style={{ color: "var(--gold)" }} />}
-                {themedAlert.type === "error" && <AlertCircle size={24} style={{ color: "#e74c3c" }} />}
-                {themedAlert.type === "info" && <HelpCircle size={24} style={{ color: "var(--gold)" }} />}
-                <h2 style={{ margin: 0, fontSize: "1.2rem" }}>{themedAlert.title}</h2>
-              </div>
-            </div>
-            <div className="dialog-body" style={{ padding: "0 0 var(--space-4) 0" }}>
-              <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--text-muted)", whiteSpace: "pre-line", lineHeight: "1.5" }}>
-                {themedAlert.message}
-              </p>
-            </div>
-            <div className="modal-actions" style={{ padding: 0, paddingTop: "var(--space-3)", borderTop: "1px solid var(--line)" }}>
-              <button 
-                type="button" 
-                className="primary-action compact-action" 
-                onClick={() => setThemedAlert(null)}
-                style={{ width: "100%" }}
-              >
-                确定
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {workspaceContextMenu && (
-        <div 
-          className="workspace-custom-contextmenu glass-panel"
-          style={{
-            position: "fixed",
-            left: `${workspaceContextMenu.x}px`,
-            top: `${workspaceContextMenu.y}px`,
-            zIndex: 99999,
-            padding: "4px",
-            minWidth: "130px",
-            background: "var(--surface)",
-            backdropFilter: "blur(12px)",
-            border: "1px solid var(--line-strong)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05)",
-            display: "flex",
-            flexDirection: "column",
-            gap: "2px"
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button 
-            type="button"
-            className="contextmenu-item"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text)",
-              padding: "6px 12px",
-              fontSize: "0.82rem",
-              textAlign: "left",
-              cursor: "pointer",
-              borderRadius: "var(--radius-sm)",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              width: "100%",
-              transition: "all 0.15s ease"
-            }}
-            onClick={() => {
-              handleLaunch(workspaceContextMenu.workspace);
-              setWorkspaceContextMenu(null);
-            }}
-          >
-            <Play size={14} style={{ color: "var(--gold)" }} />
-            <span>启动工作区</span>
-          </button>
-          <button 
-            type="button"
-            className="contextmenu-item"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text)",
-              padding: "6px 12px",
-              fontSize: "0.82rem",
-              textAlign: "left",
-              cursor: "pointer",
-              borderRadius: "var(--radius-sm)",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              width: "100%",
-              transition: "all 0.15s ease"
-            }}
-            onClick={() => {
-              handleEditWorkspace(workspaceContextMenu.workspace);
-              setWorkspaceContextMenu(null);
-            }}
-          >
-            <Edit3 size={14} />
-            <span>编辑工作区</span>
-          </button>
-          <div style={{ height: "1px", background: "var(--line)", margin: "4px 0" }} />
-          <button 
-            type="button"
-            className="contextmenu-item text-danger"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--danger)",
-              padding: "6px 12px",
-              fontSize: "0.82rem",
-              textAlign: "left",
-              cursor: "pointer",
-              borderRadius: "var(--radius-sm)",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              width: "100%",
-              transition: "all 0.15s ease"
-            }}
-            onClick={() => {
-              handleDeleteWorkspace(workspaceContextMenu.workspace.id);
-              setWorkspaceContextMenu(null);
-            }}
-          >
-            <Trash2 size={14} />
-            <span>删除工作区</span>
-          </button>
-        </div>
-      )}
-
-      {nodeContextMenu && (
-        <div 
-          className="workspace-custom-contextmenu glass-panel"
-          style={{
-            position: "fixed",
-            left: `${nodeContextMenu.x}px`,
-            top: `${nodeContextMenu.y}px`,
-            zIndex: 99999,
-            padding: "4px",
-            minWidth: "120px",
-            background: "var(--surface)",
-            backdropFilter: "blur(12px)",
-            border: "1px solid var(--line-strong)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05)",
-            display: "flex",
-            flexDirection: "column",
-            gap: "2px"
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button 
-            type="button"
-            className="contextmenu-item"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text)",
-              padding: "8px 12px",
-              fontSize: "0.82rem",
-              textAlign: "left",
-              cursor: "pointer",
-              borderRadius: "var(--radius-sm)",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              width: "100%",
-              transition: "all 0.15s ease"
-            }}
-            onClick={() => {
-              const targetParentId = nodeContextMenu.nodeId === "ROOT" ? undefined : nodeContextMenu.nodeId;
-              handleAddStep(targetParentId);
-              setNodeContextMenu(null);
-            }}
-          >
-            <Plus size={14} /> 增加节点
-          </button>
-          
-          {copiedStep && (
-            <button 
-              type="button"
-              className="contextmenu-item"
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--text)",
-                padding: "8px 12px",
-                fontSize: "0.82rem",
-                textAlign: "left",
-                cursor: "pointer",
-                borderRadius: "var(--radius-sm)",
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                width: "100%",
-                transition: "all 0.15s ease"
-              }}
-              onClick={() => {
-                handlePasteNodeAfter(nodeContextMenu.nodeId);
-                setNodeContextMenu(null);
-              }}
-            >
-              <Clipboard size={14} /> 粘贴节点
-            </button>
-          )}
-          
-          {nodeContextMenu.nodeId !== "ROOT" && (
-            <>
-              <button 
-                type="button"
-                className="contextmenu-item"
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--text)",
-                  padding: "8px 12px",
-                  fontSize: "0.82rem",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  borderRadius: "var(--radius-sm)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  width: "100%",
-                  transition: "all 0.15s ease"
-                }}
-                onClick={() => {
-                  handleCopyNode(nodeContextMenu.nodeId);
-                  setNodeContextMenu(null);
-                }}
-              >
-                <Copy size={14} /> 复制节点
-              </button>
-              
-              {copiedStep && (
-                <button 
-                  type="button"
-                  className="contextmenu-item"
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--text)",
-                    padding: "8px 12px",
-                    fontSize: "0.82rem",
-                    textAlign: "left",
-                    cursor: "pointer",
-                    borderRadius: "var(--radius-sm)",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    width: "100%",
-                    transition: "all 0.15s ease"
-                  }}
-                  onClick={() => {
-                    handleReplaceNode(nodeContextMenu.nodeId);
-                    setNodeContextMenu(null);
-                  }}
-                >
-                  <RefreshCw size={14} /> 替换节点
-                </button>
-              )}
-              
-              <button 
-                type="button"
-                className="contextmenu-item"
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--text)",
-                  padding: "8px 12px",
-                  fontSize: "0.82rem",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  borderRadius: "var(--radius-sm)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  width: "100%",
-                  transition: "all 0.15s ease"
-                }}
-                onClick={() => {
-                  setSelectedNodeId(nodeContextMenu.nodeId);
-                  setNodeContextMenu(null);
-                }}
-              >
-                <Edit3 size={14} /> 编辑节点
-              </button>
-              
-              <button 
-                type="button"
-                className="contextmenu-item text-danger"
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--danger)",
-                  padding: "8px 12px",
-                  fontSize: "0.82rem",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  borderRadius: "var(--radius-sm)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  width: "100%",
-                  transition: "all 0.15s ease"
-                }}
-                onClick={() => {
-                  handleDeleteStep(nodeContextMenu.nodeId);
-                  if (selectedNodeId === nodeContextMenu.nodeId) {
-                    setSelectedNodeId(null);
-                  }
-                  setNodeContextMenu(null);
-                }}
-              >
-                <Trash2 size={14} /> 删除节点
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      <WorkspaceContextMenus
+        workspaceContextMenu={workspaceContextMenu}
+        nodeContextMenu={nodeContextMenu}
+        copiedStep={copiedStep}
+        onCloseWorkspaceContextMenu={() => setWorkspaceContextMenu(null)}
+        onCloseNodeContextMenu={() => setNodeContextMenu(null)}
+        onLaunchWorkspace={handleLaunch}
+        onEditWorkspace={handleEditWorkspace}
+        onDeleteWorkspace={handleDeleteWorkspace}
+        onAddStep={handleAddStep}
+        onPasteNodeAfter={handlePasteNodeAfter}
+        onCopyNode={handleCopyNode}
+        onReplaceNode={handleReplaceNode}
+        onSelectNode={setSelectedNodeId}
+        onDeleteNode={(nodeId) => {
+          handleDeleteStep(nodeId);
+          if (selectedNodeId === nodeId) {
+            setSelectedNodeId(null);
+          }
+        }}
+      />
     </div>
   );
 }

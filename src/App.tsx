@@ -128,6 +128,8 @@ import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCom
 import { removeItemById, upsertItemById, upsertItemsById } from "./lib/catalogState";
 import { WindowRouter } from "./app/WindowRouter";
 import { ImportPreviewDialog, type ImportPreviewState } from "./features/catalog/ImportPreviewDialog";
+import { ResourcePathRepairDialog } from "./features/catalog/ResourcePathRepairDialog";
+import type { ResourcePathRepairPreviewEntry } from "./features/catalog/resourcePathRepair";
 import {
   ResourceEditorDialog,
   type EditorState,
@@ -239,6 +241,7 @@ import type {
   OrbitItemInput,
   OrbitPluginManifest,
   PluginLog,
+  PluginStateUpdate,
   SearchResult,
   ThemeManifest,
   TripSearchResult
@@ -613,6 +616,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding());
   const [toast, setToast] = useState("OrbitStart：正在加载本地工作台状态");
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [resourcePathRepairOpen, setResourcePathRepairOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [backupJson, setBackupJson] = useState("");
   const [backupPath, setBackupPath] = useState("");
@@ -1300,6 +1304,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setLogs(snapshot.logs);
   }
 
+  function applyPluginStateUpdate(update: PluginStateUpdate) {
+    setCommands(update.commands);
+    setPlugins(update.plugins);
+    setSettings(update.settings);
+  }
+
   function applyItemUpdate(item: OrbitItem) {
     setItems((previous) => upsertItemById(previous, item));
   }
@@ -1372,7 +1382,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
       listen<OrbitItem>("orbit://item-created", (event) => applyItemUpdate(event.payload)),
       listen<OrbitItem>("orbit://item-updated", (event) => applyItemUpdate(event.payload)),
       listen<{ id: string }>("orbit://item-deleted", (event) => applyItemDeletion(event.payload.id)),
-      listen<AppSettings>("orbit://settings-updated", (event) => setSettings(event.payload))
+      listen<AppSettings>("orbit://settings-updated", (event) => setSettings(event.payload)),
+      listen<PluginStateUpdate>("orbit://plugin-state-updated", (event) => applyPluginStateUpdate(event.payload))
     ])
       .then((nextDisposers) => {
         if (disposed) {
@@ -2310,6 +2321,31 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  async function applyResourcePathRepair(entries: readonly ResourcePathRepairPreviewEntry[]) {
+    if (entries.length === 0) return;
+    setBusy(true);
+    const updated: OrbitItem[] = [];
+    try {
+      const backup = await exportCatalogJson();
+      for (const entry of entries) {
+        if (!entry.eligible || !entry.replacementTarget) continue;
+        const saved = await updateItem({ ...entry.item, target: entry.replacementTarget });
+        updated.push(saved);
+        setItems((current) => upsertItemById(current, saved));
+      }
+      setResourcePathRepairOpen(false);
+      setToast(`已保存 ${updated.length} 项资源路径；已先创建备份：${backup.path}。未修改任何目标磁盘文件。`);
+    } catch (error) {
+      const detail = updated.length > 0
+        ? `已保存 ${updated.length} 项，其余未保存：${String(error)}`
+        : `未保存任何路径：${String(error)}`;
+      setToast(`路径修复失败：${detail}`);
+      throw new Error(detail);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function resetEditorIcon() {
     setEditor((current) => {
       if (!current) return current;
@@ -2870,8 +2906,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
     setBusy(true);
     try {
-      const snapshot = await setPluginEnabled(plugin.id, !plugin.enabled);
-      applySnapshot(snapshot);
+      const update = await setPluginEnabled(plugin.id, !plugin.enabled);
+      applyPluginStateUpdate(update);
       setToast(`${plugin.name} 已${plugin.enabled ? "停用" : "启用"}`);
       if (plugin.id === "core-websites" && plugin.enabled && activeGroup === "web") {
         setActiveGroup("all");
@@ -2980,9 +3016,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function toggleSafeMode() {
     setBusy(true);
     try {
-      const snapshot = await setSafeMode(!settings?.safeMode);
-      applySnapshot(snapshot);
-      setToast(snapshot.settings.safeMode ? "安全模式已启用：第三方插件暂时停用" : "安全模式已关闭");
+      const update = await setSafeMode(!settings?.safeMode);
+      applyPluginStateUpdate(update);
+      setToast(update.settings.safeMode ? "安全模式已启用：第三方插件暂时停用" : "安全模式已关闭");
     } catch (error) {
       setToast(`安全模式更新失败：${String(error)}`);
     } finally {
@@ -4816,6 +4852,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </button>
       </div>
       <div className="setting-card">
+        <p className="eyebrow">Portable path</p>
+        <h2>失效资源修复</h2>
+        <p>先检查路径，再按前缀生成逐项预览；确认保存会先创建 catalog 备份，不会修改目标磁盘文件。</p>
+        <button className="wide-command" onClick={() => setResourcePathRepairOpen(true)} disabled={busy}>
+          <ScanSearch size={17} />
+          <span>检查并预览路径修复</span>
+        </button>
+      </div>
+      <div className="setting-card">
         <p className="eyebrow">Reset</p>
         <h2>恢复初始化</h2>
         <p>清空所有本地数据，包括所有的资源、分组和配置，恢复到初始安装状态。</p>
@@ -5789,6 +5834,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
     />
   );
 
+  const renderResourcePathRepairDialog = () => resourcePathRepairOpen && (
+    <ResourcePathRepairDialog
+      items={items}
+      busy={busy}
+      inspectPath={getItemPathStatus}
+      onApply={applyResourcePathRepair}
+      onEditItem={(item) => {
+        setResourcePathRepairOpen(false);
+        setEditor({ mode: "edit", item, input: inputFromItem(item) });
+      }}
+      onClose={() => setResourcePathRepairOpen(false)}
+    />
+  );
+
   const renderResourceEditorDialog = () => editor && (
     <ResourceEditorDialog
       editor={editor}
@@ -5950,6 +6009,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           {selectedPlugin && renderPluginDetail()}
           {backupOpen && renderBackupDialog()}
           {importPreview && renderImportPreviewDialog()}
+          {resourcePathRepairOpen && renderResourcePathRepairDialog()}
         </main>
         {contextMenu && renderContextMenu()}
       </>
@@ -6464,6 +6524,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </section>
       )}
       {importPreview && renderImportPreviewDialog()}
+      {resourcePathRepairOpen && renderResourcePathRepairDialog()}
       </main>
       {activeLaunch && (
         <div className="workspace-launch-progress-overlay">

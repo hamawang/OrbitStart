@@ -1,6 +1,6 @@
 # 插件权限与 CSP 策略
 
-适用版本：OrbitStart 0.8.3。
+适用版本：OrbitStart 0.8.4。
 
 本策略把本地插件视为不可信扩展代码。插件可以贡献命令和搜索结果，但不能得到通用 Tauri `invoke` 能力，也不能通过一个宽泛权限获得多种高风险宿主操作。
 
@@ -17,7 +17,7 @@
 | `trips:read` | 中 | 搜索或打开 Tip 记录 |
 | `obsidian:read` | 中 | 搜索已索引的 Obsidian 待办并请求打开 |
 | `launcher:item` | 低 | 仅按已有资源 ID 启动资源 |
-| `launcher:target` | 中 | 启动插件提供的路径或 URL |
+| `launcher:target` | 高 | 启动插件提供的任意路径或 URL |
 | `filesystem:exists` | 中 | 检查本地路径是否存在 |
 | `network:probe` | 中 | 通过宿主探测端口或 URL；不是任意网络访问 |
 | `process:read` | 中 | 检查指定进程是否运行 |
@@ -26,6 +26,8 @@
 | `shell:inline-script` | 严重 | 执行插件直接提供的脚本文本 |
 
 `launcher:run_script` 要求在脚本文件和内联脚本两种模式中二选一。宿主会分别检查 `shell:script-file` 或 `shell:inline-script`；不得以空路径、同时提供路径和内容等方式绕过该选择。
+
+`src/plugin/capabilities.ts` 是前端能力风险等级的唯一来源。每个非内置插件的 `plugin.json` 必须使用其中存在的能力 ID，且其 `risk` 必须逐项完全一致；`npm run test:plugin-security` 会检查这项契约。特别地，`shell:inline-script` 在运行时、插件清单和本文档中统一为 **严重（`critical`）**，不能降级为 `high`。
 
 ## 强制规则
 

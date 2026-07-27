@@ -219,6 +219,17 @@ struct CatalogSnapshot {
     logs: Vec<PluginLog>,
 }
 
+/// The only catalog-derived state that changes when plugin availability or
+/// safe mode changes.  Returning this instead of a CatalogSnapshot avoids
+/// re-reading items, groups, themes and logs for a small settings mutation.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginStateUpdate {
+    commands: Vec<OrbitCommand>,
+    plugins: Vec<PluginManifest>,
+    settings: AppSettings,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WindowAppearance {
@@ -1470,14 +1481,6 @@ fn cache_settings_from_connection(
     Ok(settings)
 }
 
-fn snapshot_after_setting_update(app: &tauri::AppHandle) -> Result<CatalogSnapshot, String> {
-    let snapshot = catalog_snapshot()?;
-    replace_cached_settings(app, snapshot.settings.clone())?;
-    let _ = app.emit("orbit://settings-updated", snapshot.settings.clone());
-    let _ = app.emit("orbit://refresh-resources", ());
-    Ok(snapshot)
-}
-
 fn settings_after_setting_update(
     app: &tauri::AppHandle,
     conn: &Connection,
@@ -1485,6 +1488,22 @@ fn settings_after_setting_update(
     let settings = cache_settings_from_connection(app, conn)?;
     let _ = app.emit("orbit://settings-updated", settings.clone());
     Ok(settings)
+}
+
+fn plugin_state_update_after_setting_change(
+    app: &tauri::AppHandle,
+    conn: &Connection,
+) -> Result<PluginStateUpdate, String> {
+    let settings = cache_settings_from_connection(app, conn)?;
+    let plugins = all_plugins(conn)?;
+    let update = PluginStateUpdate {
+        commands: default_commands(&plugins),
+        plugins,
+        settings,
+    };
+    let _ = app.emit("orbit://settings-updated", update.settings.clone());
+    let _ = app.emit("orbit://plugin-state-updated", update.clone());
+    Ok(update)
 }
 
 fn seed_items() -> Vec<OrbitItemInput> {
@@ -1698,10 +1717,7 @@ fn default_plugins() -> Vec<PluginManifest> {
             "core-shortcuts",
             "Windows Shortcuts",
             "扫描桌面和开始菜单快捷方式，并保留原始 .lnk 启动能力。",
-            vec![
-                permission("fs:read", "读取快捷方式路径", "medium"),
-                permission("shell:open", "启动文件和程序", "medium"),
-            ],
+            vec![permission("launcher:item", "启动已保存资源", "low")],
             contributes(1, 1, 0, 0),
         ),
         plugin(
@@ -3934,8 +3950,7 @@ fn trip_count_for_items_blocking(item_ids: Vec<String>) -> Result<HashMap<String
         if chunk.is_empty() {
             continue;
         }
-        let placeholders = std::iter::repeat("?")
-            .take(chunk.len())
+        let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
@@ -3995,11 +4010,9 @@ fn get_custom_hotkeys(conn: &Connection) -> Result<Vec<(String, String)>, String
         })
         .map_err(|e| e.to_string())?;
     let mut res = Vec::new();
-    for row in rows {
-        if let Ok((key, value)) = row {
-            if let Some(group_id) = key.strip_prefix("hotkey_binder:") {
-                res.push((group_id.to_string(), value));
-            }
+    for (key, value) in rows.flatten() {
+        if let Some(group_id) = key.strip_prefix("hotkey_binder:") {
+            res.push((group_id.to_string(), value));
         }
     }
     Ok(res)
@@ -4123,11 +4136,9 @@ fn get_workspace_hotkeys() -> Result<std::collections::HashMap<String, String>, 
         })
         .map_err(|e| e.to_string())?;
     let mut map = std::collections::HashMap::new();
-    for row in rows {
-        if let Ok((key, value)) = row {
-            if let Some(ws_id) = key.strip_prefix("hotkey_workspace:") {
-                map.insert(ws_id.to_string(), value);
-            }
+    for (key, value) in rows.flatten() {
+        if let Some(ws_id) = key.strip_prefix("hotkey_workspace:") {
+            map.insert(ws_id.to_string(), value);
         }
     }
     Ok(map)
@@ -4214,11 +4225,9 @@ fn get_subtag_hotkeys() -> Result<std::collections::HashMap<String, String>, Str
         })
         .map_err(|e| e.to_string())?;
     let mut map = std::collections::HashMap::new();
-    for row in rows {
-        if let Ok((key, value)) = row {
-            if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
-                map.insert(subtag_path.to_string(), value);
-            }
+    for (key, value) in rows.flatten() {
+        if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
+            map.insert(subtag_path.to_string(), value);
         }
     }
     Ok(map)
@@ -4336,7 +4345,7 @@ fn create_items_from_paths_with_conn(
         if let Some(group_id) = &destination_group {
             input.group = group_id.clone();
         }
-        created.push(insert_item(&conn, &input)?);
+        created.push(insert_item(conn, &input)?);
     }
     Ok(created)
 }
@@ -6490,7 +6499,7 @@ fn update_global_hotkey(app: tauri::AppHandle, new_hotkey: String) -> Result<(),
 
         // 尝试注册新快捷键，看是否冲突或格式无效
         shortcut_manager
-            .register(new_shortcut.clone())
+            .register(new_shortcut)
             .map_err(|e| format!("快捷键冲突或注册失败: {}", e))?;
 
         // 注册成功，注销老快捷键
@@ -6829,7 +6838,7 @@ fn set_plugin_enabled(
     app: tauri::AppHandle,
     id: String,
     enabled: bool,
-) -> Result<CatalogSnapshot, String> {
+) -> Result<PluginStateUpdate, String> {
     let conn = open_db()?;
     conn.execute(
         "UPDATE plugin_states SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
@@ -6846,8 +6855,7 @@ fn set_plugin_enabled(
             "Plugin disabled"
         },
     )?;
-    let _ = app.emit("orbit://refresh-resources", ());
-    catalog_snapshot()
+    plugin_state_update_after_setting_change(&app, &conn)
 }
 
 #[tauri::command]
@@ -6879,7 +6887,7 @@ fn set_close_behavior(app: tauri::AppHandle, behavior: String) -> Result<AppSett
 }
 
 #[tauri::command]
-fn set_safe_mode(app: tauri::AppHandle, enabled: bool) -> Result<CatalogSnapshot, String> {
+fn set_safe_mode(app: tauri::AppHandle, enabled: bool) -> Result<PluginStateUpdate, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "safe_mode", if enabled { "true" } else { "false" })?;
     log_plugin_event(
@@ -6892,7 +6900,7 @@ fn set_safe_mode(app: tauri::AppHandle, enabled: bool) -> Result<CatalogSnapshot
             "Safe mode disabled"
         },
     )?;
-    snapshot_after_setting_update(&app)
+    plugin_state_update_after_setting_change(&app, &conn)
 }
 
 #[tauri::command]
@@ -8551,8 +8559,8 @@ fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, 
     // `WebviewUrl::App` accepts only an app-relative path. Passing a query
     // string here makes WebView2 resolve a non-existent `index.html?…` asset
     // and leaves the transparent bubble window on about:blank. The frontend
-    // already identifies this window from Tauri's `floating-bubble` label.
-    let url = WebviewUrl::App("index.html".into());
+    // loads its own minimal Vite entry instead of the main application bundle.
+    let url = WebviewUrl::App("floating-bubble.html".into());
     WebviewWindowBuilder::new(app, "floating-bubble", url)
         .title("OrbitStart Bubble")
         .inner_size(size, size)
@@ -8576,9 +8584,8 @@ fn create_bubble_menu_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWin
     }
 
     let always_on_top = cached_settings(app)?.bubble_always_on_top;
-    // See `create_bubble_window`: the window label, not a query string,
-    // selects the bubble-menu UI.
-    let url = WebviewUrl::App("index.html".into());
+    // The menu uses its own entry and does not parse the main application.
+    let url = WebviewUrl::App("floating-bubble-menu.html".into());
     WebviewWindowBuilder::new(app, "floating-bubble-menu", url)
         .title("OrbitStart Bubble Menu")
         .inner_size(BUBBLE_MENU_OUTER_WIDTH, BUBBLE_MENU_OUTER_HEIGHT)
@@ -8994,10 +9001,8 @@ fn handle_main_window_close(window: &tauri::Window, event: &WindowEvent) {
     api.prevent_close();
     if close_behavior_setting(window.app_handle()) == "exit" {
         window.app_handle().exit(0);
-    } else {
-        if let Err(error) = hide_main_and_maybe_show_bubble(window.app_handle()) {
-            eprintln!("Failed to hide main window for floating bubble: {error}");
-        }
+    } else if let Err(error) = hide_main_and_maybe_show_bubble(window.app_handle()) {
+        eprintln!("Failed to hide main window for floating bubble: {error}");
     }
 }
 
@@ -9070,22 +9075,16 @@ fn handle_global_shortcut_press(
             if let Ok(rows) = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             }) {
-                for row in rows {
-                    if let Ok((key, value)) = row {
-                        if !value.is_empty() {
-                            if let Ok(sh) = normalize_hotkey(&value)
-                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
-                            {
-                                if shortcut == &sh {
-                                    if let Some(workspace_id) =
-                                        key.strip_prefix("hotkey_workspace:")
-                                    {
-                                        let _ = app.emit(
-                                            "orbit://run-workspace",
-                                            workspace_id.to_string(),
-                                        );
-                                        return;
-                                    }
+                for (key, value) in rows.flatten() {
+                    if !value.is_empty() {
+                        if let Ok(sh) = normalize_hotkey(&value)
+                            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                        {
+                            if shortcut == &sh {
+                                if let Some(workspace_id) = key.strip_prefix("hotkey_workspace:") {
+                                    let _ =
+                                        app.emit("orbit://run-workspace", workspace_id.to_string());
+                                    return;
                                 }
                             }
                         }
@@ -9101,17 +9100,15 @@ fn handle_global_shortcut_press(
             if let Ok(rows) = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             }) {
-                for row in rows {
-                    if let Ok((key, value)) = row {
-                        if !value.is_empty() {
-                            if let Ok(sh) = normalize_hotkey(&value)
-                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
-                            {
-                                if shortcut == &sh {
-                                    if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
-                                        show_navigate_to_subtag(app, subtag_path);
-                                        return;
-                                    }
+                for (key, value) in rows.flatten() {
+                    if !value.is_empty() {
+                        if let Ok(sh) = normalize_hotkey(&value)
+                            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                        {
+                            if shortcut == &sh {
+                                if let Some(subtag_path) = key.strip_prefix("hotkey_subtag:") {
+                                    show_navigate_to_subtag(app, subtag_path);
+                                    return;
                                 }
                             }
                         }
@@ -9180,18 +9177,16 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
                 if let Ok(rows) = stmt.query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 }) {
-                    for row in rows {
-                        if let Ok((key, value)) = row {
-                            if !value.is_empty() {
-                                if let Ok(sh) = normalize_hotkey(&value)
-                                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
-                                {
-                                    if let Err(e) = app.global_shortcut().register(sh) {
-                                        eprintln!(
-                                            "Failed to register workspace shortcut '{}' for workspace '{}': {}",
-                                            value, key, e
-                                        );
-                                    }
+                    for (key, value) in rows.flatten() {
+                        if !value.is_empty() {
+                            if let Ok(sh) = normalize_hotkey(&value)
+                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                            {
+                                if let Err(e) = app.global_shortcut().register(sh) {
+                                    eprintln!(
+                                        "Failed to register workspace shortcut '{}' for workspace '{}': {}",
+                                        value, key, e
+                                    );
                                 }
                             }
                         }
@@ -9206,18 +9201,16 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
                 if let Ok(rows) = stmt.query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 }) {
-                    for row in rows {
-                        if let Ok((key, value)) = row {
-                            if !value.is_empty() {
-                                if let Ok(sh) = normalize_hotkey(&value)
-                                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
-                                {
-                                    if let Err(e) = app.global_shortcut().register(sh) {
-                                        eprintln!(
-                                            "Failed to register subtag shortcut '{}' for subtag '{}': {}",
-                                            value, key, e
-                                        );
-                                    }
+                    for (key, value) in rows.flatten() {
+                        if !value.is_empty() {
+                            if let Ok(sh) = normalize_hotkey(&value)
+                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                            {
+                                if let Err(e) = app.global_shortcut().register(sh) {
+                                    eprintln!(
+                                        "Failed to register subtag shortcut '{}' for subtag '{}': {}",
+                                        value, key, e
+                                    );
                                 }
                             }
                         }
@@ -10042,11 +10035,11 @@ fn workspaces_plugin_manifest() -> &'static str {
   "enabled": true,
   "builtin": false,
   "permissions": [
-    { "id": "catalog:read", "label": "读取已有资源列表", "risk": "medium" },
-    { "id": "launcher:item", "label": "启动已保存资源", "risk": "medium" },
+    { "id": "catalog:read", "label": "读取已有资源列表", "risk": "low" },
+    { "id": "launcher:item", "label": "启动已保存资源", "risk": "low" },
     { "id": "launcher:target", "label": "启动配置目标", "risk": "high" },
     { "id": "shell:script-file", "label": "运行选定脚本文件", "risk": "high" },
-    { "id": "shell:inline-script", "label": "运行内联脚本内容", "risk": "high" },
+    { "id": "shell:inline-script", "label": "运行内联脚本内容", "risk": "critical" },
     { "id": "filesystem:exists", "label": "检查路径是否存在", "risk": "medium" },
     { "id": "network:probe", "label": "探测端口和网址", "risk": "medium" },
     { "id": "process:read", "label": "检查进程运行状态", "risk": "medium" },
@@ -10183,7 +10176,8 @@ mod workspaces_plugin_manifest_tests {
         assert!(generated
             .permissions
             .iter()
-            .any(|permission| permission.id == "shell:inline-script" && permission.risk == "high"));
+            .any(|permission| permission.id == "shell:inline-script"
+                && permission.risk == "critical"));
     }
 
     #[test]

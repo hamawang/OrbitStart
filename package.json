@@ -1,6 +1,6 @@
 {
   "name": "orbitstart",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,9 +14,12 @@
     "version:check": "node tools/check-version-consistency.mjs",
     "release:verify": "node tools/check-version-consistency.mjs --release",
     "updater:manifest": "node tools/create-updater-manifest.mjs",
-    "test:e2e": "node tools/run-e2e.mjs tests/basic.spec.ts",
+    "performance:compare": "node tools/compare-performance-measurements.mjs",
+    "test:performance": "node tests/performance-compare-harness.cjs",
+    "test:plugin-security": "node tools/check-plugin-security-contract.mjs",
+    "test:e2e": "node tools/run-e2e.mjs tests/basic.spec.ts tests/resource-path-repair.spec.ts tests/workspaces.spec.ts",
     "test:e2e:themes": "node tools/run-e2e.mjs tests/atelier-zero.spec.ts",
-    "test:custom": "node tests/custom-harness.cjs"
+    "test:custom": "node tools/check-plugin-security-contract.mjs && node tests/custom-harness.cjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

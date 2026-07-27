@@ -184,10 +184,9 @@ export const plugins: OrbitPluginManifest[] = [
     description: "扫描桌面和开始菜单快捷方式，并保留原始 .lnk 启动能力。",
     enabled: true,
     builtin: true,
-    permissions: [
-      { id: "fs:read", label: "读取快捷方式路径", risk: "medium" },
-      { id: "shell:open", label: "启动文件和程序", risk: "medium" }
-    ],
+    // 快捷方式扫描是受信任的内置原生命令；这里仅描述导入后可由
+    // 插件接口按资源 ID 启动的能力，不能把宽泛的 shell 权限展示为授权。
+    permissions: [{ id: "launcher:item", label: "启动已导入的快捷方式资源", risk: "low" }],
     contributes: { commands: 1, searchProviders: 1, themes: 0, views: 0 }
   },
   {

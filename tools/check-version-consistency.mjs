@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,6 +62,23 @@ function cargoPackageVersion() {
   return version;
 }
 
+function cargoPackageDefaultRun() {
+  const cargo = readText("src-tauri/Cargo.toml");
+  let inPackageSection = false;
+  for (const line of cargo.split(/\r?\n/)) {
+    if (/^\[package\]\s*$/.test(line)) {
+      inPackageSection = true;
+      continue;
+    }
+    if (inPackageSection && /^\[.+\]\s*$/.test(line)) break;
+    if (inPackageSection) {
+      const value = line.match(/^default-run\s*=\s*"([^"]+)"\s*$/)?.[1];
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
 function isSemver(value) {
   return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
 }
@@ -74,6 +91,7 @@ function expect(condition, message) {
 const packageJson = readJson("package.json");
 const packageLock = readJson("package-lock.json");
 const tauriConfig = readJson("src-tauri/tauri.conf.json");
+const cargoDefaultRun = cargoPackageDefaultRun();
 const versions = {
   "package.json": packageJson.version,
   "package-lock.json packages[\"\"]": packageLock.packages?.[""]?.version,
@@ -85,6 +103,28 @@ for (const [source, version] of Object.entries(versions)) {
   expect(typeof version === "string" && isSemver(version), `${source} has an invalid semver version: ${String(version)}`);
   expect(version === packageJson.version, `${source} is ${String(version)}, expected ${packageJson.version}`);
 }
+expect(
+  cargoDefaultRun === "orbitstart",
+  `src-tauri/Cargo.toml must set default-run = "orbitstart"; received ${String(cargoDefaultRun)}`
+);
+
+// A signed release must always produce updater artifacts.  Check every
+// conventional Tauri config overlay so an old local packaging override cannot
+// silently disable signatures in CI or a manual release build.
+const tauriConfigFiles = readdirSync(resolve(root, "src-tauri"), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && /^tauri(?:\..+)?\.conf\.json$/i.test(entry.name))
+  .map((entry) => `src-tauri/${entry.name}`);
+for (const configPath of tauriConfigFiles) {
+  const config = readJson(configPath);
+  expect(
+    config.bundle?.createUpdaterArtifacts !== false,
+    `${configPath} disables createUpdaterArtifacts; release configs must not suppress updater signatures`
+  );
+}
+expect(
+  tauriConfig.bundle?.createUpdaterArtifacts === true,
+  "src-tauri/tauri.conf.json must explicitly enable createUpdaterArtifacts for signed releases"
+);
 if (expectedVersion) {
   expect(isSemver(expectedVersion), `Expected version is not semver: ${expectedVersion}`);
   expect(packageJson.version === expectedVersion, `Application version is ${packageJson.version}, expected ${expectedVersion}`);

@@ -31,8 +31,8 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.rail-button')).not.toHaveCount(0);
   });
 
-  test('should route both dedicated floating-bubble windows without rendering the main app', async ({ page }) => {
-    await page.goto('/?label=floating-bubble');
+  test('should render both dedicated floating-window entries without rendering the main app', async ({ page }) => {
+    await page.goto('/floating-bubble.html');
     const mainBubble = page.locator('.main-bubble');
     await expect(mainBubble).toBeVisible({ timeout: 5000 });
     await expect(mainBubble).not.toHaveAttribute('title');
@@ -40,7 +40,7 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.app-shell')).toHaveCount(0);
 
     await page.setViewportSize({ width: 372, height: 104 });
-    await page.goto('/?label=floating-bubble-menu');
+    await page.goto('/floating-bubble-menu.html');
     const bubbleMenu = page.locator('.bubble-menu-shell');
     await expect(bubbleMenu).toBeVisible({ timeout: 5000 });
     await expect(bubbleMenu).toHaveCSS('width', '340px');
@@ -51,14 +51,14 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.app-shell')).toHaveCount(0);
   });
 
-  test('should route the floating bubble from the Tauri window label without a URL query', async ({ page }) => {
+  test('should render the floating bubble entry with a Tauri window label and no URL query', async ({ page }) => {
     await page.addInitScript(() => {
       (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: 'floating-bubble' } }
       };
     });
 
-    await page.goto('/');
+    await page.goto('/floating-bubble.html');
     await expect(page.locator('.main-bubble')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('.app-shell')).toHaveCount(0);
   });
@@ -309,10 +309,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.8.3 on the about page', async ({ page }) => {
+  test('should show version 0.8.4 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.8.3');
+    await expect(page.locator('.about-card')).toContainText('0.8.4');
   });
 
   test('should display and interact with the sub-directory selection modal', async ({ page }) => {
@@ -505,7 +505,8 @@ test.describe('OrbitStart E2E Basic Verification', () => {
         await native.deleteItem(updated.id);
         const imported = await native.importCatalogJson(JSON.stringify({ items: [{ ...created, id: 'browser-imported-item' }] }));
         const themed = await native.setActiveTheme('atelier-zero');
-        const pluginSnapshot = await native.setPluginEnabled('core-items', false);
+        const pluginUpdate = await native.setPluginEnabled('core-items', false);
+        const safeModeUpdate = await native.setSafeMode(true);
         const storedItems = JSON.parse(window.localStorage.getItem('orbitstart.browser.items') ?? '[]') as Array<{ id: string }>;
 
         return {
@@ -514,7 +515,8 @@ test.describe('OrbitStart E2E Basic Verification', () => {
           importedItemIsPresent: storedItems.some((item) => item.id === 'browser-imported-item'),
           imported: imported.imported,
           activeThemeId: themed.activeThemeId,
-          pluginEnabled: pluginSnapshot.plugins.find((plugin) => plugin.id === 'core-items')?.enabled
+          pluginEnabled: pluginUpdate.plugins.find((plugin) => plugin.id === 'core-items')?.enabled,
+          safeMode: safeModeUpdate.settings.safeMode
         };
       } finally {
         if (bridgeDescriptor) {
@@ -529,6 +531,7 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(result.imported).toBe(1);
     expect(result.activeThemeId).toBe('atelier-zero');
     expect(result.pluginEnabled).toBe(false);
+    expect(result.safeMode).toBe(true);
   });
 
   test('should surface Tauri invocation failures without mutating browser fallback storage', async ({ page }) => {
@@ -576,7 +579,8 @@ test.describe('OrbitStart E2E Basic Verification', () => {
         ['delete_item', () => native.deleteItem(item.id)],
         ['import_catalog_json', () => native.importCatalogJson(JSON.stringify({ items: [] }))],
         ['set_active_theme', () => native.setActiveTheme('atelier-zero')],
-        ['set_plugin_enabled', () => native.setPluginEnabled('core-items', false)]
+        ['set_plugin_enabled', () => native.setPluginEnabled('core-items', false)],
+        ['set_safe_mode', () => native.setSafeMode(true)]
       ];
 
       try {
@@ -614,7 +618,8 @@ test.describe('OrbitStart E2E Basic Verification', () => {
       { expectedCommand: 'delete_item', name: 'NativeCommandError', command: 'delete_item' },
       { expectedCommand: 'import_catalog_json', name: 'NativeCommandError', command: 'import_catalog_json' },
       { expectedCommand: 'set_active_theme', name: 'NativeCommandError', command: 'set_active_theme' },
-      { expectedCommand: 'set_plugin_enabled', name: 'NativeCommandError', command: 'set_plugin_enabled' }
+      { expectedCommand: 'set_plugin_enabled', name: 'NativeCommandError', command: 'set_plugin_enabled' },
+      { expectedCommand: 'set_safe_mode', name: 'NativeCommandError', command: 'set_safe_mode' }
     ]);
   });
 });

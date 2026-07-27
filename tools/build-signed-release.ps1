@@ -69,7 +69,7 @@ try {
   & npm.cmd run version:check -- --expect-version $version
   if ($LASTEXITCODE -ne 0) { throw "Version consistency check failed." }
 
-  & npm.cmd run tauri:build -- --bundles nsis --ci
+  & npm.cmd run tauri:build -- --bundles nsis --ci -- --bin orbitstart
   if ($LASTEXITCODE -ne 0) { throw "Signed Tauri build failed." }
 
   $artifactName = "OrbitStart_" + $version + "_x64-setup.exe"
@@ -94,7 +94,11 @@ try {
   & node (Join-Path $projectRoot "tools\check-version-consistency.mjs") --release --expect-version $version --manifest $manifestPath
   if ($LASTEXITCODE -ne 0) { throw "Signed release verification failed." }
 
-  Get-FileHash -LiteralPath $publishedArtifact -Algorithm SHA256 | Select-Object Algorithm,Hash,Path | Format-List
+  $hash = Get-FileHash -LiteralPath $publishedArtifact -Algorithm SHA256
+  $hashPath = Join-Path $releaseDirectory ($artifactName + ".sha256")
+  [System.IO.File]::WriteAllText($hashPath, ("{0} *{1}`r`n" -f $hash.Hash, $artifactName), [System.Text.UTF8Encoding]::new($false))
+  $hash | Select-Object Algorithm,Hash,Path | Format-List
+  Write-Output ("Wrote SHA-256 file to " + $hashPath)
   Write-Output ("Signed release artifacts are ready in " + $releaseDirectory)
 }
 finally {

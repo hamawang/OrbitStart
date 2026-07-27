@@ -20,6 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: npm run version:check
+      - run: npm run test:plugin-security
       - run: npm run build
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml
@@ -28,4 +29,5 @@ jobs:
       - run: npx playwright install msedge
       - run: npm run test:e2e
       - run: npm run test:e2e:themes
+      - run: npm run test:performance
       - run: npm run test:custom
