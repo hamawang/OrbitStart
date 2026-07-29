@@ -1,4 +1,4 @@
-import { FolderKanban, FolderOpen, Image, Save, X } from "lucide-react";
+import { FolderKanban, FolderOpen, Image, Keyboard, Save, X } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 import type { ItemKind, OrbitGroup, OrbitItem, OrbitItemInput, ResourcePathMode } from "../../types";
 import { joinGroupIds, listToText, normalizeList, splitGroupIds } from "./model";
@@ -37,6 +37,10 @@ type ResourceEditorDialogProps = {
   onOpenSubTagSelector: (currentValue: string) => void;
   onPickIcon: () => void;
   onResetIcon: () => void;
+  hotkeyEnabled?: boolean;
+  itemHotkey?: string;
+  onRecordHotkey?: () => void;
+  onClearHotkey?: () => void;
   onClose: () => void;
   onSave: () => void;
 };
@@ -55,6 +59,10 @@ export function ResourceEditorDialog({
   onOpenSubTagSelector,
   onPickIcon,
   onResetIcon,
+  hotkeyEnabled = false,
+  itemHotkey,
+  onRecordHotkey,
+  onClearHotkey,
   onClose,
   onSave
 }: ResourceEditorDialogProps) {
@@ -254,6 +262,24 @@ export function ResourceEditorDialog({
               </button>
             </div>
           </label>
+          {editor.mode === "edit" && hotkeyEnabled && (
+            <label className="wide-field">
+              资源全局快捷键
+              <div className="field-actions">
+                <button type="button" className="secondary-action" onClick={onRecordHotkey} disabled={busy}>
+                  <Keyboard size={16} />
+                  {itemHotkey ? "修改快捷键" : "录入快捷键"}
+                </button>
+                {itemHotkey && (
+                  <button type="button" className="secondary-action danger-action" onClick={onClearHotkey} disabled={busy}>
+                    解除绑定
+                  </button>
+                )}
+                {itemHotkey && <code>{itemHotkey}</code>}
+              </div>
+              <small>为该资源设置全局快捷键；按下后会直接启动资源。</small>
+            </label>
+          )}
           <label className="wide-field">
             别名
             <input

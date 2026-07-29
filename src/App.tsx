@@ -224,6 +224,8 @@ import {
   updateGroupHotkey,
   getSubTagHotkeys,
   updateSubTagHotkey,
+  getItemHotkeys,
+  updateItemHotkey,
   launchTarget,
   setBubbleSetting
 } from "./lib/native";
@@ -293,8 +295,10 @@ type AppDialogState =
   | { type: "create-subtag"; value: string; itemIds: string[] }
   | { type: "subtag-rename"; oldPath: string; value: string }
   | { type: "subtag-hotkey"; subtagPath: string; value: string }
+  | { type: "item-hotkey"; item: OrbitItem; value: string }
   | { type: "subtag-delete-confirm"; subtagPath: string }
-  | { type: "batch-remove-tag"; tagId: string };
+  | { type: "batch-remove-tag"; tagId: string }
+  | { type: "plugin-permission"; plugin: OrbitPluginManifest; permissions: string[] };
 
 function getInitialView(): ViewId {
   if (typeof window === "undefined") return "dashboard";
@@ -736,6 +740,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const [hotkeysBoundToGroup, setHotkeysBoundToGroup] = useState<Record<string, string>>({});
   const [hotkeysBoundToSubTag, setHotkeysBoundToSubTag] = useState<Record<string, string>>({});
+  const [hotkeysBoundToItem, setHotkeysBoundToItem] = useState<Record<string, string>>({});
   const [groupDragActiveId, setGroupDragActiveId] = useState<string | null>(null);
 
   const pluginStateReady = plugins.length > 0;
@@ -760,13 +765,24 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   };
 
+  const fetchItemHotkeys = async () => {
+    try {
+      const keys = await getItemHotkeys();
+      setHotkeysBoundToItem(keys);
+    } catch (e) {
+      console.error("Failed to load item hotkeys", e);
+    }
+  };
+
   useEffect(() => {
     if (hotkeyBinderEnabled) {
       void fetchGroupHotkeys();
       void fetchSubTagHotkeys();
+      void fetchItemHotkeys();
     } else {
       setHotkeysBoundToGroup({});
       setHotkeysBoundToSubTag({});
+      setHotkeysBoundToItem({});
     }
   }, [hotkeyBinderEnabled]);
 
@@ -946,6 +962,77 @@ export function MainApp({ windowLabel }: MainAppProps) {
           setToast(`子目录「${dialog.subtagPath}」已绑定快捷键：${dialog.value}`);
           setDialog(null);
           await fetchSubTagHotkeys();
+        } catch (error) {
+          setToast(`绑定失败：${String(error)}`);
+        } finally {
+          setBusy(false);
+        }
+      }
+    }
+  };
+
+  const handleItemHotkeyKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setDialog(null);
+      return;
+    }
+
+    if (event.key === "Backspace") {
+      if (dialog?.type === "item-hotkey") {
+        setBusy(true);
+        void updateItemHotkey(dialog.item.id, null).then(async () => {
+          setToast(`资源「${dialog.item.title}」已解除快捷键绑定`);
+          setDialog(null);
+          await fetchItemHotkeys();
+        }).catch((error) => {
+          setToast(`解除绑定失败：${String(error)}`);
+        }).finally(() => {
+          setBusy(false);
+        });
+      }
+      return;
+    }
+
+    const key = event.key;
+    const isModifier = ["Control", "Alt", "Shift", "Meta", "OS"].includes(key);
+    const keys: string[] = [];
+    if (event.ctrlKey) keys.push("Ctrl");
+    if (event.altKey) keys.push("Alt");
+    if (event.shiftKey) keys.push("Shift");
+    if (event.metaKey) keys.push("Win");
+
+    if (!isModifier) {
+      let keyName = key;
+      if (keyName === " ") keyName = "Space";
+      if (keyName.length === 1) {
+        keyName = keyName.toUpperCase();
+      } else {
+        keyName = keyName.charAt(0).toUpperCase() + keyName.slice(1);
+      }
+      if (!keys.includes(keyName)) keys.push(keyName);
+    }
+
+    const combination = keys.slice(0, 4).join("+");
+    setDialog((prev) => prev?.type === "item-hotkey" ? { ...prev, value: combination } : prev);
+  };
+
+  const handleItemHotkeyKeyUp = async (event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (dialog?.type === "item-hotkey" && dialog.value) {
+      const parts = dialog.value.split("+");
+      const hasMainKey = parts.length > 0 && !["Ctrl", "Alt", "Shift", "Win"].includes(parts[parts.length - 1]);
+      if (hasMainKey) {
+        setBusy(true);
+        try {
+          await updateItemHotkey(dialog.item.id, dialog.value);
+          setToast(`资源「${dialog.item.title}」已绑定快捷键：${dialog.value}`);
+          setDialog(null);
+          await fetchItemHotkeys();
         } catch (error) {
           setToast(`绑定失败：${String(error)}`);
         } finally {
@@ -1344,8 +1431,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
     applySnapshot(snapshot);
     if (snapshot.plugins.some((p) => p.id === "hotkey-binder" && p.enabled)) {
       void fetchGroupHotkeys();
+      void fetchSubTagHotkeys();
+      void fetchItemHotkeys();
     } else {
       setHotkeysBoundToGroup({});
+      setHotkeysBoundToSubTag({});
+      setHotkeysBoundToItem({});
     }
     return snapshot;
   }
@@ -1843,6 +1934,10 @@ export function MainApp({ windowLabel }: MainAppProps) {
       pluginHost.dispose();
     };
   }, [pluginHost]);
+
+  useEffect(() => {
+    if (paletteOpen) pluginHost.startDeferredRuntimes();
+  }, [paletteOpen, pluginHost]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2733,6 +2828,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
             resourceIconStyle={resourceIconStyle}
             renderIcon={Icon}
             formatLastLaunched={lastLaunchedText}
+            hotkey={hotkeyBinderEnabled ? hotkeysBoundToItem[item.id] : undefined}
             isSimple={isSimple}
             densityFactor={densityFactor}
           />
@@ -2909,22 +3005,24 @@ export function MainApp({ windowLabel }: MainAppProps) {
       (permission) => permission.risk === "high" || permission.risk === "critical"
     );
     if (!plugin.enabled && sensitivePermissions.length > 0) {
-      const permissionNames = sensitivePermissions.map((permission) => permission.label).join("、");
-      const confirmed = window.confirm(
-        "启用插件“" + plugin.name + "”将授予高风险能力：" + permissionNames + "。请仅在信任插件来源和用途时继续。"
-      );
-      if (!confirmed) {
-        setToast("已取消启用高风险插件");
-        return;
-      }
+      setDialog({
+        type: "plugin-permission",
+        plugin,
+        permissions: sensitivePermissions.map((permission) => permission.label)
+      });
+      return;
     }
 
+    await updatePluginEnabledState(plugin, !plugin.enabled);
+  }
+
+  async function updatePluginEnabledState(plugin: OrbitPluginManifest, enabled: boolean) {
     setBusy(true);
     try {
-      const update = await setPluginEnabled(plugin.id, !plugin.enabled);
+      const update = await setPluginEnabled(plugin.id, enabled);
       applyPluginStateUpdate(update);
-      setToast(`${plugin.name} 已${plugin.enabled ? "停用" : "启用"}`);
-      if (plugin.id === "core-websites" && plugin.enabled && activeGroup === "web") {
+      setToast(`${plugin.name} 已${enabled ? "启用" : "停用"}`);
+      if (plugin.id === "core-websites" && !enabled && activeGroup === "web") {
         setActiveGroup("all");
       }
     } catch (error) {
@@ -2932,6 +3030,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function confirmPluginPermission(plugin: OrbitPluginManifest) {
+    setDialog(null);
+    await updatePluginEnabledState(plugin, true);
   }
 
   async function changeTheme(themeId: string) {
@@ -3947,6 +4050,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                         resourceIconStyle={resourceIconStyle}
                         renderIcon={Icon}
                         formatLastLaunched={lastLaunchedText}
+                        hotkey={hotkeyBinderEnabled ? hotkeysBoundToItem[activeItem.id] : undefined}
                         isOverlay={true}
                         isSimple={isSimple}
                         densityFactor={densityFactor}
@@ -5116,6 +5220,84 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
+    if (dialog.type === "plugin-permission") {
+      return (
+        <section
+          className="palette-backdrop centered-backdrop plugin-permission-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="plugin-permission-title"
+          aria-describedby="plugin-permission-description"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setDialog(null);
+              setToast("已取消启用高风险插件");
+            }
+          }}
+        >
+          <div className="modal-panel dialog-panel plugin-permission-dialog">
+            <div className="modal-head">
+              <div className="plugin-permission-heading">
+                <span className="plugin-permission-icon" aria-hidden="true">
+                  <ShieldAlert size={20} />
+                </span>
+                <div>
+                  <p className="eyebrow">Permission review</p>
+                  <h2 id="plugin-permission-title">确认启用高风险插件</h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="icon-action"
+                aria-label="取消启用"
+                onClick={() => {
+                  setDialog(null);
+                  setToast("已取消启用高风险插件");
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body plugin-permission-body">
+              <p id="plugin-permission-description" className="dialog-warning">
+                启用“{dialog.plugin.name}”后，它将获得以下高风险能力。请仅在信任插件来源和用途时继续。
+              </p>
+              <div className="plugin-permission-list" aria-label="将授予的高风险能力">
+                {dialog.permissions.map((permission, index) => (
+                  <span key={`${permission}-${index}`}>
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    {permission}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-action"
+                autoFocus
+                onClick={() => {
+                  setDialog(null);
+                  setToast("已取消启用高风险插件");
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => void confirmPluginPermission(dialog.plugin)}
+                disabled={busy}
+              >
+                <ShieldCheck size={17} />
+                确认启用
+              </button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     if (dialog.type === "group-hotkey") {
       const group = groups.find((g) => g.id === dialog.groupId);
       return (
@@ -5547,6 +5729,48 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
+    if (dialog.type === "item-hotkey") {
+      return (
+        <section className="palette-backdrop centered-backdrop item-hotkey-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal-panel dialog-panel">
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Hotkey Binder</p>
+                <h2>录制资源快捷键</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <p style={{ fontSize: "var(--font-size-sm)", color: "var(--soft)", marginBottom: "var(--space-4)" }}>
+                请按下要为资源 <strong>{dialog.item.title}</strong> 绑定的全局快捷键（例如 <code>Ctrl+Shift+1</code>）。按下后会直接启动该资源。
+              </p>
+              <label>
+                按键录制中…
+                <input
+                  autoFocus
+                  readOnly
+                  placeholder="按下按键组合进行录制..."
+                  value={dialog.value || "请按下按键..."}
+                  onKeyDown={handleItemHotkeyKeyDown}
+                  onKeyUp={handleItemHotkeyKeyUp}
+                  className="recording"
+                  style={{ caretColor: "transparent", cursor: "pointer", textAlign: "center", fontSize: "16px", fontWeight: "bold" }}
+                />
+              </label>
+              <p style={{ fontSize: "var(--font-size-xs)", color: "var(--soft)", marginTop: "var(--space-2)" }}>
+                支持 Ctrl、Alt、Shift、Win + 任意单键。按 <code>Backspace</code> 清除当前绑定，按 <code>Escape</code> 退出。
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     if (dialog.type === "subtag-rename") {
       return (
         <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
@@ -5650,6 +5874,41 @@ export function MainApp({ windowLabel }: MainAppProps) {
             <button type="button" onClick={() => void runResourceContextAction("reveal", resource)}>打开所在位置</button>
             <button type="button" onClick={() => void runResourceContextAction("copy", resource)}>复制路径 / URL</button>
             <span className="context-separator" />
+            {hotkeyBinderEnabled && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDialog({ type: "item-hotkey", item: resource, value: hotkeysBoundToItem[resource.id] || "" });
+                    setContextMenu(null);
+                  }}
+                >
+                  {hotkeysBoundToItem[resource.id] ? "修改全局快捷键" : "绑定全局快捷键"}
+                </button>
+                {hotkeysBoundToItem[resource.id] && (
+                  <button
+                    type="button"
+                    className="context-danger"
+                    onClick={async () => {
+                      setContextMenu(null);
+                      setBusy(true);
+                      try {
+                        await updateItemHotkey(resource.id, null);
+                        setToast(`资源「${resource.title}」已解除快捷键绑定`);
+                        await fetchItemHotkeys();
+                      } catch (error) {
+                        setToast(`解除绑定失败：${String(error)}`);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    删除全局快捷键
+                  </button>
+                )}
+                <span className="context-separator" />
+              </>
+            )}
             <button type="button" onClick={() => void runResourceContextAction("edit", resource)}>编辑资源</button>
             <button type="button" onClick={() => void runResourceContextAction("favorite", resource)}>
               {resource.favorite ? "取消收藏" : "收藏"}
@@ -5970,6 +6229,25 @@ export function MainApp({ windowLabel }: MainAppProps) {
       }}
       onPickIcon={() => void chooseCustomIcon()}
       onResetIcon={resetEditorIcon}
+      hotkeyEnabled={hotkeyBinderEnabled}
+      itemHotkey={editor.mode === "edit" ? hotkeysBoundToItem[editor.item.id] : undefined}
+      onRecordHotkey={() => {
+        if (editor.mode === "edit") {
+          setDialog({ type: "item-hotkey", item: editor.item, value: hotkeysBoundToItem[editor.item.id] || "" });
+        }
+      }}
+      onClearHotkey={() => {
+        if (editor.mode !== "edit") return;
+        setBusy(true);
+        void updateItemHotkey(editor.item.id, null).then(async () => {
+          setToast(`资源「${editor.item.title}」已解除快捷键绑定`);
+          await fetchItemHotkeys();
+        }).catch((error) => {
+          setToast(`解除绑定失败：${String(error)}`);
+        }).finally(() => {
+          setBusy(false);
+        });
+      }}
       onClose={() => setEditor(null)}
       onSave={() => void saveEditor()}
     />

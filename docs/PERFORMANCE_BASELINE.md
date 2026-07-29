@@ -20,7 +20,7 @@
 
 - `-ProcessId` 锁定一个受控 OrbitStart 实例，避免多个会话混在一起；不指定时按进程名采样。
 - 优先用 `Win32_Process` 父子关系归因 OrbitStart 的 WebView2 子进程。
-- 若当前权限不允许读取父进程关系，则退回为**仅 OrbitStart 根进程**；不会猜测或合计全局 WebView2。
+- 若当前权限不允许读取 `Win32_Process`，会优先使用 Windows 只读 `Toolhelp32` 快照保留父子关系；仅在两者都不可用时才退回为**仅 OrbitStart 根进程**，且不会猜测或合计全局 WebView2。
 - `-IncludeAllWebView2` 仅用于故障排查，输出会明确标记 `UnattributedWebView2`；不得用该模式得出 OrbitStart 专属内存结论。
 - CPU 取相邻样本的累计 CPU 时间差。首个样本没有 CPU 百分比，且多核机器上总值可能超过 100%。
 - `-OutputPath` 可保存原始样本、聚合摘要、采样配置与主机信息为 JSON；若目标已存在则拒绝覆盖。

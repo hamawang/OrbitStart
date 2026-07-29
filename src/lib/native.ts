@@ -1273,6 +1273,32 @@ export async function updateSubTagHotkey(subtagPath: string, hotkey: string | nu
   }
 }
 
+export async function getItemHotkeys(): Promise<Record<string, string>> {
+  try {
+    return await invokeNative<Record<string, string>>("get_item_hotkeys");
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const raw = window.localStorage.getItem("orbitstart.browser.item_hotkeys");
+    return raw ? JSON.parse(raw) : {};
+  }
+}
+
+export async function updateItemHotkey(itemId: string, hotkey: string | null): Promise<void> {
+  try {
+    await invokeNative<void>("update_item_hotkey", { itemId, newHotkey: hotkey });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const raw = window.localStorage.getItem("orbitstart.browser.item_hotkeys");
+    const map = raw ? JSON.parse(raw) : {};
+    if (hotkey) {
+      map[itemId] = hotkey;
+    } else {
+      delete map[itemId];
+    }
+    window.localStorage.setItem("orbitstart.browser.item_hotkeys", JSON.stringify(map));
+  }
+}
+
 
 export async function setBubbleSetting(key: string, value: string): Promise<AppSettings> {
   try {

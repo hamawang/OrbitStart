@@ -64,6 +64,94 @@ function ConvertTo-MiB {
   return [math]::Round(([double]$Bytes / 1MB), 2)
 }
 
+function Get-ToolhelpProcessInventory {
+  # Some managed Windows environments deny Win32_Process even for the current
+  # user's processes. Toolhelp32 is a read-only OS snapshot that still exposes
+  # the parent PID needed to attribute the app's WebView2 helpers correctly.
+  if ($null -eq ('OrbitStartToolhelpSnapshot' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class OrbitStartToolhelpSnapshot
+{
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+  public struct PROCESSENTRY32
+  {
+    public uint dwSize;
+    public uint cntUsage;
+    public uint th32ProcessID;
+    public IntPtr th32DefaultHeapID;
+    public uint th32ModuleID;
+    public uint cntThreads;
+    public uint th32ParentProcessID;
+    public int pcPriClassBase;
+    public uint dwFlags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+    public string szExeFile;
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool Process32First(IntPtr snapshot, ref PROCESSENTRY32 entry);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool Process32Next(IntPtr snapshot, ref PROCESSENTRY32 entry);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  public static string[] GetEntries()
+  {
+    const uint TH32CS_SNAPPROCESS = 0x00000002;
+    var snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == new IntPtr(-1))
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+
+    try
+    {
+      var entries = new List<string>();
+      var entry = new PROCESSENTRY32();
+      entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+      if (!Process32First(snapshot, ref entry))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+
+      do
+      {
+        entries.Add(entry.th32ProcessID + "|" + entry.th32ParentProcessID + "|" + entry.szExeFile);
+        entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+      } while (Process32Next(snapshot, ref entry));
+
+      return entries.ToArray();
+    }
+    finally
+    {
+      CloseHandle(snapshot);
+    }
+  }
+}
+'@ -ErrorAction Stop
+  }
+
+  return @(
+    [OrbitStartToolhelpSnapshot]::GetEntries() | ForEach-Object {
+      $parts = $_ -split '\|', 3
+      [pscustomobject]@{
+        ProcessId       = [int]$parts[0]
+        ParentProcessId = [int]$parts[1]
+        Name            = [string]$parts[2]
+      }
+    }
+  )
+}
+
 function Get-ProcessInventory {
   try {
     $cimProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
@@ -84,9 +172,50 @@ function Get-ProcessInventory {
       )
     }
   } catch {
-    # Sandboxed or locked-down Windows sessions can deny Win32_Process.  Keep
-    # the root-process figures useful, but never guess which WebView2 helpers
-    # belong to OrbitStart without parent-process metadata.
+    # Sandboxed or locked-down Windows sessions can deny Win32_Process. Prefer
+    # a read-only Toolhelp32 snapshot before falling back to root-only metrics.
+    try {
+      $toolhelpProcesses = @(Get-ToolhelpProcessInventory)
+      $fallbackProcesses = @()
+      $metricsByProcessId = @{}
+      foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        try {
+          $metricsByProcessId[[int]$process.Id] = [pscustomobject]@{
+            WorkingSetBytes = [double]$process.WorkingSet64
+            PrivateBytes    = [double]$process.PrivateMemorySize64
+          }
+        } catch {
+          # A protected process can deny an individual metric. It is irrelevant
+          # unless it also appears in the target application's process tree.
+        }
+      }
+
+      foreach ($entry in $toolhelpProcesses) {
+        $metrics = $metricsByProcessId[[int]$entry.ProcessId]
+        if ($null -ne $metrics) {
+          $fallbackProcesses += [pscustomobject]@{
+            Name            = [string]$entry.Name
+            ProcessId       = [int]$entry.ProcessId
+            ParentProcessId = [int]$entry.ParentProcessId
+            WorkingSetBytes = $metrics.WorkingSetBytes
+            PrivateBytes    = $metrics.PrivateBytes
+          }
+        }
+      }
+
+      if ($fallbackProcesses.Count -gt 0) {
+        return [pscustomobject]@{
+          Source        = 'Toolhelp32 snapshot'
+          HasParentInfo = $true
+          Warning       = 'Win32_Process 不可用；已使用只读 Toolhelp32 快照归因进程树。'
+          Processes     = $fallbackProcesses
+        }
+      }
+    } catch {
+      # Preserve the conservative root-only fallback below if Toolhelp32 is
+      # unavailable in an unusual Windows environment.
+    }
+
     $fallbackProcesses = @()
     foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
       try {
@@ -329,7 +458,7 @@ $aggregate = [pscustomobject]@{
   PrivateMemoryMiBMax      = [math]::Round((($privateMemoryValues | Measure-Object -Maximum).Maximum), 2)
   CpuPercentAverage        = if ($cpuValues.Count -eq 0) { $null } else { [math]::Round((($cpuValues | Measure-Object -Average).Average), 2) }
   CpuPercentMax            = if ($cpuValues.Count -eq 0) { $null } else { [math]::Round((($cpuValues | Measure-Object -Maximum).Maximum), 2) }
-  HasParentProcessInfo     = @($allRows | Where-Object { $_.Source -eq 'Win32_Process' }).Count -gt 0
+  HasParentProcessInfo     = @($allRows | Where-Object { $_.Source -in @('Win32_Process', 'Toolhelp32 snapshot') }).Count -gt 0
   IncludesUnattributedWebView2 = @($allRows | Where-Object { $_.Association -eq 'UnattributedWebView2' }).Count -gt 0
 }
 

@@ -13,10 +13,16 @@ interface DisposableRuntime {
   dispose(): void;
 }
 
+interface RuntimeRegistration {
+  runtime: DisposableRuntime;
+  deferStart: boolean;
+  started: boolean;
+}
+
 export class PluginContext {
   private readonly commandRegistry = new Map<string, RegisteredCommand>();
   private readonly searchProviders = new Map<string, SearchProvider>();
-  private readonly runtimes = new Set<DisposableRuntime>();
+  private readonly runtimes = new Set<RuntimeRegistration>();
   private readonly listeners = new Set<() => void>();
   private started = false;
   private disposed = false;
@@ -78,25 +84,39 @@ export class PluginContext {
     return () => this.listeners.delete(listener);
   }
 
-  addRuntime(runtime: DisposableRuntime) {
+  addRuntime(runtime: DisposableRuntime, options: { deferStart?: boolean } = {}) {
     if (this.disposed) {
       runtime.dispose();
       return;
     }
-    this.runtimes.add(runtime);
-    if (this.started) void runtime.start?.();
+    const registration: RuntimeRegistration = {
+      runtime,
+      deferStart: options.deferStart === true,
+      started: false
+    };
+    this.runtimes.add(registration);
+    if (this.started && !registration.deferStart) this.startRuntime(registration);
   }
 
   start() {
     if (this.disposed || this.started) return;
     this.started = true;
-    for (const runtime of this.runtimes) void runtime.start?.();
+    for (const registration of this.runtimes) {
+      if (!registration.deferStart) this.startRuntime(registration);
+    }
+  }
+
+  startDeferredRuntimes() {
+    if (this.disposed || !this.started) return;
+    for (const registration of this.runtimes) {
+      if (registration.deferStart) this.startRuntime(registration);
+    }
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    for (const runtime of this.runtimes) runtime.dispose();
+    for (const registration of this.runtimes) registration.runtime.dispose();
     this.runtimes.clear();
     this.commandRegistry.clear();
     this.searchProviders.clear();
@@ -107,15 +127,26 @@ export class PluginContext {
   private notify() {
     for (const listener of this.listeners) listener();
   }
+
+  private startRuntime(registration: RuntimeRegistration) {
+    if (registration.started) return;
+    registration.started = true;
+    void registration.runtime.start?.();
+  }
 }
 
 function enabled(plugins: OrbitPluginManifest[], id: string) {
   return plugins.some((plugin) => plugin.id === id && plugin.enabled);
 }
 
+// These bundled plugins only contribute commands or search results. Deferring
+// their isolated Worker until the command palette opens lowers idle WebView2
+// memory without changing the workspaces or global-hotkey behavior.
+const ON_DEMAND_PLUGIN_IDS = new Set(["hello-command", "tips-search", "obsidian-search"]);
+
 function activateLocalPluginRuntime(ctx: PluginContext, plugin: OrbitPluginManifest) {
   const runtime = new WorkerPluginRuntime(plugin, ctx);
-  ctx.addRuntime(runtime);
+  ctx.addRuntime(runtime, { deferStart: ON_DEMAND_PLUGIN_IDS.has(plugin.id) });
 }
 
 export function createOrbitPluginHost(plugins: OrbitPluginManifest[] = []) {

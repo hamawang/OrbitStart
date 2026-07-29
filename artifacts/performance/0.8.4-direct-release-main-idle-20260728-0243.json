@@ -1,0 +1,288 @@
+﻿{
+    "SchemaVersion":  1,
+    "CapturedAt":  "2026-07-28T02:44:57.2642059+08:00",
+    "Scenario":  "A-main-window-idle",
+    "BuildLabel":  "0.8.4-direct-release-custom-protocol",
+    "ProcessName":  "OrbitStart.exe",
+    "RequestedPids":  [
+                          43076
+                      ],
+    "Host":  {
+                 "MachineName":  "SU",
+                 "OsVersion":  "Microsoft Windows NT 10.0.26200.0",
+                 "ProcessorCount":  20
+             },
+    "Configuration":  {
+                          "SampleSeconds":  30,
+                          "IntervalMilliseconds":  3000,
+                          "IncludeAllWebView2":  false
+                      },
+    "Summary":  {
+                    "SampleCount":  10,
+                    "Latest":  {
+                                   "Timestamp":  "2026-07-28T02:44:50.1575704+08:00",
+                                   "SampleIndex":  10,
+                                   "Source":  "Get-Process fallback",
+                                   "OrbitStartProcesses":  1,
+                                   "WebView2Processes":  0,
+                                   "TrackedProcesses":  1,
+                                   "WorkingSetMiB":  33.41,
+                                   "PrivateMemoryMiB":  7.75,
+                                   "CpuPercent":  0
+                               },
+                    "WorkingSetMiBMin":  33.41,
+                    "WorkingSetMiBAverage":  33.42,
+                    "WorkingSetMiBMax":  33.46,
+                    "PrivateMemoryMiBMin":  7.75,
+                    "PrivateMemoryMiBAverage":  7.78,
+                    "PrivateMemoryMiBMax":  7.84,
+                    "CpuPercentAverage":  0,
+                    "CpuPercentMax":  0,
+                    "HasParentProcessInfo":  false,
+                    "IncludesUnattributedWebView2":  false
+                },
+    "SampleSummaries":  [
+                            {
+                                "Timestamp":  "2026-07-28T02:44:05.3609444+08:00",
+                                "SampleIndex":  1,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.46,
+                                "PrivateMemoryMiB":  7.84,
+                                "CpuPercent":  null
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:09.4508335+08:00",
+                                "SampleIndex":  2,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.46,
+                                "PrivateMemoryMiB":  7.84,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:12.6228506+08:00",
+                                "SampleIndex":  3,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.46,
+                                "PrivateMemoryMiB":  7.84,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:15.7467472+08:00",
+                                "SampleIndex":  4,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:19.0404351+08:00",
+                                "SampleIndex":  5,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:25.0373742+08:00",
+                                "SampleIndex":  6,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:28.7467667+08:00",
+                                "SampleIndex":  7,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:40.1018261+08:00",
+                                "SampleIndex":  8,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:46.9538087+08:00",
+                                "SampleIndex":  9,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            },
+                            {
+                                "Timestamp":  "2026-07-28T02:44:50.1575704+08:00",
+                                "SampleIndex":  10,
+                                "Source":  "Get-Process fallback",
+                                "OrbitStartProcesses":  1,
+                                "WebView2Processes":  0,
+                                "TrackedProcesses":  1,
+                                "WorkingSetMiB":  33.41,
+                                "PrivateMemoryMiB":  7.75,
+                                "CpuPercent":  0
+                            }
+                        ],
+    "Samples":  [
+                    {
+                        "Timestamp":  "2026-07-28T02:44:05.3609444+08:00",
+                        "SampleIndex":  1,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.46,
+                        "PrivateMemoryMiB":  7.84,
+                        "CpuPercent":  null,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:09.4508335+08:00",
+                        "SampleIndex":  2,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.46,
+                        "PrivateMemoryMiB":  7.84,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:12.6228506+08:00",
+                        "SampleIndex":  3,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.46,
+                        "PrivateMemoryMiB":  7.84,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:15.7467472+08:00",
+                        "SampleIndex":  4,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:19.0404351+08:00",
+                        "SampleIndex":  5,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:25.0373742+08:00",
+                        "SampleIndex":  6,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:28.7467667+08:00",
+                        "SampleIndex":  7,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:40.1018261+08:00",
+                        "SampleIndex":  8,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:46.9538087+08:00",
+                        "SampleIndex":  9,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    },
+                    {
+                        "Timestamp":  "2026-07-28T02:44:50.1575704+08:00",
+                        "SampleIndex":  10,
+                        "Source":  "Get-Process fallback",
+                        "Association":  "OrbitStartRoot",
+                        "Process":  "orbitstart.exe",
+                        "ProcessId":  43076,
+                        "ParentProcessId":  null,
+                        "WorkingSetMiB":  33.41,
+                        "PrivateMemoryMiB":  7.75,
+                        "CpuPercent":  0,
+                        "CpuTotalSeconds":  0.59375
+                    }
+                ]
+}

@@ -205,6 +205,7 @@ export function SortableResourceRow({
   resourceIconStyle,
   renderIcon,
   formatLastLaunched,
+  hotkey,
   isOverlay = false,
   isSimple = false,
   densityFactor = 0
@@ -225,6 +226,7 @@ export function SortableResourceRow({
   resourceIconStyle: (item: OrbitItem) => CSSProperties;
   renderIcon: RenderIcon;
   formatLastLaunched: (item: OrbitItem) => string;
+  hotkey?: string;
   isOverlay?: boolean;
   isSimple?: boolean;
   densityFactor?: number;
@@ -257,6 +259,11 @@ export function SortableResourceRow({
       {...(dragDisabled ? {} : listeners)}
       onDragStart={(event) => event.preventDefault()}
     >
+      {hotkey && !batchMode && !isOverlay && (
+        <span className="resource-hotkey-badge" aria-label={`全局快捷键 ${hotkey}`}>
+          {hotkey}
+        </span>
+      )}
       {batchMode && !isOverlay && (
         <label className="tile-check" onPointerDown={(event) => event.stopPropagation()}>
           <input

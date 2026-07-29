@@ -38,7 +38,14 @@ function preparePluginSource(source, entry) {
     .replace(/:\s*OrbitPlugin\b/g, "")
     .replace(/:\s*OrbitPluginContext\b/g, "")
     .replace(/export\s+default\s+/g, "__orbit_exports.default = ");
-  return `${next}\n//# sourceURL=orbit-plugin://${entry}`;
+  return [
+    "function __orbit_plugin_factory(__orbit_exports) {",
+    '"use strict";',
+    next,
+    "return __orbit_exports.default;",
+    "}",
+    `//# sourceURL=orbit-plugin://${entry}`
+  ].join("\n");
 }
 
 // --- Read the hello-command plugin source ---
@@ -117,7 +124,7 @@ const sandbox = {
   },
 };
 
-const bootstrapScript = `${bootstrap}\n;self.onmessage = self.onmessage;`;
+const bootstrapScript = `${bootstrap}\n${prepared}\n;self.onmessage = self.onmessage;`;
 
 try {
   const context = vm.createContext(sandbox);

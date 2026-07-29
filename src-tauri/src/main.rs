@@ -4305,6 +4305,97 @@ fn update_subtag_hotkey(
 }
 
 #[tauri::command]
+fn get_item_hotkeys() -> Result<std::collections::HashMap<String, String>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_item:%'")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for (key, value) in rows.flatten() {
+        if let Some(item_id) = key.strip_prefix("hotkey_item:") {
+            map.insert(item_id.to_string(), value);
+        }
+    }
+    Ok(map)
+}
+
+#[tauri::command]
+fn update_item_hotkey(
+    app: tauri::AppHandle,
+    item_id: String,
+    new_hotkey: Option<String>,
+) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let setting_key = format!("hotkey_item:{}", item_id);
+        let old_hotkey = setting(&conn, &setting_key, "").unwrap_or_default();
+        let old_shortcut = normalize_hotkey(&old_hotkey)
+            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .ok();
+        let new_hotkey = new_hotkey.filter(|hotkey| !hotkey.is_empty());
+        let new_shortcut = new_hotkey
+            .as_ref()
+            .map(|hotkey| {
+                normalize_hotkey(hotkey)
+                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    .map_err(|e| format!("解析快捷键失败，格式可能不正确: {e}"))
+            })
+            .transpose()?;
+        let shortcut_manager = app.global_shortcut();
+
+        let shortcut_changed = new_hotkey
+            .as_ref()
+            .map(|hotkey| normalize_hotkey(hotkey) != normalize_hotkey(&old_hotkey))
+            .unwrap_or(!old_hotkey.is_empty());
+
+        if shortcut_changed {
+            if let Some(shortcut) = old_shortcut {
+                let _ = shortcut_manager.unregister(shortcut);
+            }
+            if let Some(shortcut) = new_shortcut {
+                if let Err(error) = shortcut_manager.register(shortcut) {
+                    if let Some(old_shortcut) = old_shortcut {
+                        let _ = shortcut_manager.register(old_shortcut);
+                    }
+                    return Err(format!("快捷键冲突或注册失败: {error}"));
+                }
+            }
+        }
+
+        if let Some(hotkey) = new_hotkey {
+            set_setting_value(&conn, &setting_key, &hotkey)?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                .map_err(|e| e.to_string())?;
+        }
+
+        let _ = app.emit("orbit://refresh-resources", ());
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let setting_key = format!("hotkey_item:{}", item_id);
+        if let Some(hotkey) = new_hotkey.filter(|hotkey| !hotkey.is_empty()) {
+            set_setting_value(&conn, &setting_key, &hotkey)?;
+        } else {
+            conn.execute("DELETE FROM settings WHERE key = ?1", params![&setting_key])
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = app.emit("orbit://refresh-resources", ());
+        Ok(())
+    }
+}
+
+#[tauri::command]
 fn create_item(app: tauri::AppHandle, input: OrbitItemInput) -> Result<OrbitItem, String> {
     let conn = open_db()?;
     let item = insert_item(&conn, &input)?;
@@ -5739,6 +5830,22 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
 #[tauri::command]
 fn delete_item(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let conn = open_db()?;
+    let hotkey_setting_key = format!("hotkey_item:{}", id);
+    let old_hotkey = setting(&conn, &hotkey_setting_key, "").unwrap_or_default();
+    #[cfg(desktop)]
+    if !old_hotkey.is_empty() {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(shortcut) =
+            normalize_hotkey(&old_hotkey).parse::<tauri_plugin_global_shortcut::Shortcut>()
+        {
+            let _ = app.global_shortcut().unregister(shortcut);
+        }
+    }
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![&hotkey_setting_key],
+    )
+    .map_err(|error| format!("Failed to cleanup item hotkey: {error}"))?;
     conn.execute("DELETE FROM trips WHERE item_id = ?1", params![&id])
         .map_err(|error| format!("Failed to cleanup trips: {error}"))?;
     conn.execute("DELETE FROM items WHERE id = ?1", params![&id])
@@ -9116,6 +9223,29 @@ fn handle_global_shortcut_press(
                 }
             }
         }
+
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_item:%'")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
+                for (key, value) in rows.flatten() {
+                    if !value.is_empty() {
+                        if let Ok(sh) = normalize_hotkey(&value)
+                            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                        {
+                            if shortcut == &sh {
+                                if let Some(item_id) = key.strip_prefix("hotkey_item:") {
+                                    let _ = launch_item(app.clone(), item_id.to_string());
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -9209,6 +9339,29 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
                                 if let Err(e) = app.global_shortcut().register(sh) {
                                     eprintln!(
                                         "Failed to register subtag shortcut '{}' for subtag '{}': {}",
+                                        value, key, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_item:%'")
+            {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    for (key, value) in rows.flatten() {
+                        if !value.is_empty() {
+                            if let Ok(sh) = normalize_hotkey(&value)
+                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                            {
+                                if let Err(e) = app.global_shortcut().register(sh) {
+                                    eprintln!(
+                                        "Failed to register item shortcut '{}' for item '{}': {}",
                                         value, key, e
                                     );
                                 }
@@ -9881,6 +10034,8 @@ pub fn run() {
             update_group_hotkey,
             get_subtag_hotkeys,
             update_subtag_hotkey,
+            get_item_hotkeys,
+            update_item_hotkey,
             create_items_from_paths,
             pick_resource_input,
             pick_icon_image,

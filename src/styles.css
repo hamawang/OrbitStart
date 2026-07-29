@@ -2047,6 +2047,35 @@ kbd {
   touch-action: none;
 }
 
+.resource-hotkey-badge {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 3;
+  max-width: calc(100% - var(--space-5));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--surface) 72%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  background: var(--theme-accent);
+  box-shadow: 0 2px 5px color-mix(in srgb, var(--bg-deep) 36%, transparent);
+  color: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.resource-row.simple-mode .resource-hotkey-badge {
+  top: var(--space-1);
+  right: var(--space-1);
+  font-size: 9px;
+}
+
 .resource-row:hover,
 .resource-row.selected {
   border-color: rgba(39, 215, 198, 0.32);
@@ -3700,6 +3729,10 @@ kbd {
   z-index: 10005 !important;
 }
 
+.palette-backdrop.item-hotkey-backdrop {
+  z-index: 11001 !important;
+}
+
 /* Aux panel (settings/plugins/themes/about) — above command palette so it
    never gets trapped underneath when opened from the palette. */
 .palette-backdrop.aux-backdrop {
@@ -3836,6 +3869,64 @@ kbd {
 
 .dialog-panel {
   width: min(520px, calc(100vw - 48px));
+}
+
+.plugin-permission-dialog {
+  max-width: 500px;
+}
+
+.plugin-permission-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.plugin-permission-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--accent);
+}
+
+.plugin-permission-body {
+  gap: var(--space-4);
+}
+
+.plugin-permission-body .dialog-warning {
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--soft);
+}
+
+.plugin-permission-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.plugin-permission-list span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+}
+
+.plugin-permission-list svg {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 .editor-panel {
