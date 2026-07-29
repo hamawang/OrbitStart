@@ -3,6 +3,7 @@ import type {
   ExportResult,
   ImportResult,
   AppSettings,
+  MotionMode,
   ObsidianNoteIndex,
   ObsidianScanResult,
   ObsidianSearchResult,
@@ -120,11 +121,16 @@ function readBrowserSnapshot(): Phase0Snapshot {
     };
   }
   try {
+    const parsed = JSON.parse(raw) as Partial<Phase0Snapshot>;
     return {
       ...phase0Snapshot,
-      ...JSON.parse(raw),
+      ...parsed,
+      settings: {
+        ...phase0Snapshot.settings,
+        ...(parsed.settings ?? {})
+      },
       items: readBrowserItems()
-    } as Phase0Snapshot;
+    };
   } catch {
     return {
       ...phase0Snapshot,
@@ -883,6 +889,21 @@ export async function setDensity(density: string): Promise<AppSettings> {
     const next = {
       ...snapshot,
       settings: { ...snapshot.settings, density }
+    };
+    writeBrowserSnapshot(next);
+    return next.settings;
+  }
+}
+
+export async function setMotionMode(motionMode: MotionMode): Promise<AppSettings> {
+  try {
+    return await invokeNative<AppSettings>("set_motion_mode", { motionMode });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const snapshot = readBrowserSnapshot();
+    const next = {
+      ...snapshot,
+      settings: { ...snapshot.settings, motionMode }
     };
     writeBrowserSnapshot(next);
     return next.settings;

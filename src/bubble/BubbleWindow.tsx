@@ -4,12 +4,16 @@ import { listen } from "@tauri-apps/api/event";
 import type { AppSettings } from "../types";
 import { installFrontendErrorReporting } from "../bootstrap/frontendErrorReporting";
 import { DEFAULT_BUBBLE_SETTINGS, hasTauriBridge, loadBubbleSettings } from "./appearance";
+import { readBootstrapMotionMode } from "../motion/policy";
 import "./bubbleWindow.css";
 
 type BubbleComponent = ComponentType<{ settings: AppSettings | null }>;
 
 function BubbleWindow({ Bubble }: { Bubble: BubbleComponent }) {
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_BUBBLE_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings>(() => ({
+    ...DEFAULT_BUBBLE_SETTINGS,
+    motionMode: readBootstrapMotionMode()
+  }));
 
   useEffect(() => {
     let disposed = false;

@@ -1,6 +1,7 @@
 export type ItemKind = "app" | "file" | "folder" | "website" | "script" | "action_chain";
 export type ResourcePathMode = "absolute" | "data-relative" | "workspace-relative";
 export type ResourcePathStatus = "available" | "missing" | "permission-denied" | "network-unavailable" | "invalid";
+export type MotionMode = "full" | "standard" | "minimal" | "off";
 
 export interface OrbitItem {
   id: string;
@@ -255,6 +256,7 @@ export interface PluginLog {
 
 export interface AppSettings {
   activeThemeId: string;
+  motionMode: MotionMode;
   safeMode: boolean;
   density: "comfortable" | "compact" | string;
   globalHotkey: string;
@@ -288,6 +290,7 @@ export interface SearchResult {
   icon: string;
   source: string;
   actionLabel: string;
+  timeoutMs?: number;
   run: () => void | Promise<void>;
   resourceId?: string;
 }

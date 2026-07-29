@@ -56,13 +56,14 @@ import {
   Play,
   GripVertical
 } from "lucide-react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { DndContext, closestCenter, pointerWithin, rectIntersection, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { emit, listen } from "@tauri-apps/api/event";
+import { AnimatePresence, m, useIsPresent } from "motion/react";
 
 class SmartMouseSensor extends MouseSensor {
   static activators = [
@@ -127,6 +128,19 @@ import { closeWindow, getAppWindow, minimizeWindow, toggleMaximizeWindow } from 
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
 import { removeItemById, upsertItemById, upsertItemsById } from "./lib/catalogState";
 import { WindowRouter } from "./app/WindowRouter";
+import {
+  MotionCollapse,
+  MotionDialog,
+  MotionPage,
+  MotionProvider,
+  MotionStatusSwap,
+  MotionTooltip,
+  MotionTooltipButton,
+  motionVariants,
+  readBootstrapMotionMode,
+  useMotionPolicy,
+  useMotionTransition
+} from "./motion";
 import { ImportPreviewDialog, type ImportPreviewState } from "./features/catalog/ImportPreviewDialog";
 import { ResourcePathRepairDialog } from "./features/catalog/ResourcePathRepairDialog";
 import type { ResourcePathRepairPreviewEntry } from "./features/catalog/resourcePathRepair";
@@ -139,7 +153,8 @@ import {
   DroppableRootSection,
   SortableGroupTab,
   SortableResourceRow,
-  SortableSubTagSection
+  SortableSubTagSection,
+  type ResourceLaunchState
 } from "./features/catalog/ResourceList";
 import {
   buildDefaultImportSelection,
@@ -162,9 +177,7 @@ import {
 } from "./features/catalog/model";
 import { tripCategoryLabels } from "./lib/tripTemplates";
 import {
-  shouldShowOnboarding,
-  completeOnboarding,
-  skipOnboarding
+  shouldShowOnboarding
 } from "./lib/onboarding";
 import {
   addObsidianVault,
@@ -227,12 +240,23 @@ import {
   getItemHotkeys,
   updateItemHotkey,
   launchTarget,
-  setBubbleSetting
+  setBubbleSetting,
+  setMotionMode
 } from "./lib/native";
 import { createOrbitPluginHost } from "./plugin/api";
+import {
+  PLUGIN_STORAGE_CHANGED_EVENT,
+  type PluginStorageChangedDetail
+} from "./plugin/storageEvents";
+import {
+  parseStoredWorkspaceLaunch,
+  STORAGE_KEY_ACTIVE_LAUNCH,
+  type WorkspaceLaunchProgress
+} from "./components/Workspaces/workspaceLaunch";
 import { localGalaxyAssets } from "./theme/localGalaxyAssets";
 import type {
   AppSettings,
+  MotionMode,
   ItemKind,
   ObsidianNoteIndex,
   ObsidianTask,
@@ -252,6 +276,8 @@ import type { ScenarioTag, ScenarioGroup } from "./lib/onboarding";
 
 const appIconSrc = new URL("../design/app-icons/orbitstart-first-icon-ui.png", import.meta.url).href;
 const RESOURCE_RENDER_PAGE_SIZE = 120;
+const LARGE_CATALOG_MOTION_THRESHOLD = 2000;
+const WORKSPACE_LAUNCH_STALE_AFTER_MS = 60_000;
 const IMPORT_PREVIEW_PAGE_SIZE = 100;
 
 const Workspaces = lazy(async () => {
@@ -384,6 +410,50 @@ function Icon({ name, size = 22 }: { name: string; size?: number }) {
   return <Component size={size} strokeWidth={1.8} />;
 }
 
+function MotionPresenceLayer({
+  children,
+  kind = "panel",
+  className = ""
+}: {
+  children: ReactNode;
+  kind?: "panel" | "command" | "drawer" | "fade" | "context";
+  className?: string;
+}) {
+  const enterTransition = useMotionTransition(kind === "context" ? "context" : "overlay");
+  const exitTransition = useMotionTransition(
+    kind === "context" ? "contextExit" : kind === "drawer" ? "drawerExit" : "exit"
+  );
+  const isPresent = useIsPresent();
+  const layerRef = useRef<HTMLDivElement>(null);
+  const variants = motionVariants.fade;
+  const exitVariant = {
+    ...(variants.exit as Record<string, unknown>),
+    transition: exitTransition
+  };
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    if (isPresent) layer.removeAttribute("inert");
+    else layer.setAttribute("inert", "");
+  }, [isPresent]);
+
+  return (
+    <m.div
+      ref={layerRef}
+      className={`motion-presence-layer motion-presence-${kind} ${className}`.trim()}
+      data-presence={isPresent ? "present" : "exiting"}
+      variants={variants}
+      initial="hidden"
+      animate="visible"
+      exit={exitVariant}
+      transition={enterTransition}
+    >
+      {children}
+    </m.div>
+  );
+}
+
 function makeEmptyInput(kind: ItemKind = "app"): OrbitItemInput {
   const option = baseKindOptions.find((candidate) => candidate.value === kind) ?? baseKindOptions[0];
   return {
@@ -501,25 +571,33 @@ function SortableKpiCard({ id, children }: SortableKpiCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: id,
   });
+  const dndTransform = transform ? CSS.Transform.toString(transform) : "none";
 
-  const style: CSSProperties = {
-    transform: transform ? CSS.Transform.toString(transform) : undefined,
+  const style = {
+    transform: dndTransform,
     transition,
     opacity: isDragging ? 0.5 : 1,
-    cursor: "grab",
-    userSelect: "none",
-  };
+    "--dnd-transform": dndTransform,
+    "--dnd-transition": transition || "none"
+  } as CSSProperties;
 
   return (
-    <article
+    <div
       ref={setNodeRef}
       style={style}
-      className={`kpi-card workbench-kpi-card ${isDragging ? "dragging" : ""}`}
-      {...attributes}
-      {...listeners}
+      className={`workbench-kpi-sortable ${isDragging ? "dragging" : ""}`}
+      data-motion-transform="dnd"
+      data-dnd-active={Boolean(transform) || isDragging ? "true" : "false"}
     >
-      {children}
-    </article>
+      <article
+        className="kpi-card workbench-kpi-card"
+        style={{ cursor: "grab", userSelect: "none" }}
+        {...attributes}
+        {...listeners}
+      >
+        {children}
+      </article>
+    </div>
   );
 }
 
@@ -534,30 +612,66 @@ function SortableActionButton({ id, onClick, disabled, children }: SortableActio
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: id,
   });
+  const dndTransform = transform ? CSS.Transform.toString(transform) : "none";
 
-  const style: CSSProperties = {
-    transform: transform ? CSS.Transform.toString(transform) : undefined,
+  const style = {
+    transform: dndTransform,
     transition,
     opacity: isDragging ? 0.5 : 1,
-    cursor: "grab",
-    userSelect: "none",
-  };
+    "--dnd-transform": dndTransform,
+    "--dnd-transition": transition || "none"
+  } as CSSProperties;
 
   return (
-    <button
+    <div
       ref={setNodeRef}
       style={style}
-      className={`wide-command ${isDragging ? "dragging" : ""}`}
-      onClick={(e) => {
-        if (isDragging) return;
-        onClick();
-      }}
-      disabled={disabled}
-      {...attributes}
-      {...listeners}
+      className={`workbench-action-sortable ${isDragging ? "dragging" : ""}`}
+      data-motion-transform="dnd"
+      data-dnd-active={Boolean(transform) || isDragging ? "true" : "false"}
+    >
+      <button
+        className="wide-command"
+        style={{ cursor: "grab", userSelect: "none" }}
+        onClick={() => {
+          if (isDragging) return;
+          onClick();
+        }}
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+      >
+        {children}
+      </button>
+    </div>
+  );
+}
+
+function MotionWorkbenchPanel({ children }: { children: ReactNode }) {
+  const { animationsEnabled, transformsEnabled } = useMotionPolicy();
+  const transition = useMotionTransition("panel");
+  const variants = !animationsEnabled
+    ? {
+        hidden: { opacity: 1 },
+        visible: { opacity: 1 },
+        exit: { opacity: 1 }
+      }
+    : transformsEnabled
+      ? motionVariants.drawer
+      : motionVariants.fade;
+
+  return (
+    <m.aside
+      className="surface-panel operations-panel resource-detail-panel"
+      variants={variants}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+      transition={transition}
+      data-motion-panel="workbench"
     >
       {children}
-    </button>
+    </m.aside>
   );
 }
 
@@ -570,6 +684,7 @@ interface MainAppProps {
 }
 
 export function MainApp({ windowLabel }: MainAppProps) {
+  const bootstrapMotionMode = useMemo(readBootstrapMotionMode, []);
   const auxPanel = useMemo(() => {
     const panel = new URLSearchParams(window.location.search).get("panel");
     if (panel === "settings" || panel === "plugins" || panel === "themes" || panel === "about") return panel;
@@ -661,6 +776,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [updateCheckMessage, setUpdateCheckMessage] = useState("检查 GitHub Release 中是否有可用更新。");
   const [localAuxPanel, setLocalAuxPanel] = useState<AuxPanel | null>(null);
   const [busy, setBusy] = useState(false);
+  const [resourceLaunchStates, setResourceLaunchStates] = useState<Record<string, ResourceLaunchState>>({});
+  const [newResourceIds, setNewResourceIds] = useState<string[]>([]);
+  const [deletingResourceIds, setDeletingResourceIds] = useState<string[]>([]);
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -686,6 +804,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [activeObsidianVault, setActiveObsidianVault] = useState("all");
   const [obsidianQuery, setObsidianQuery] = useState("");
   const [obsidianScanningId, setObsidianScanningId] = useState<string | null>(null);
+  const [obsidianVaultDeleteCandidate, setObsidianVaultDeleteCandidate] = useState<ObsidianVaultConfig | null>(null);
   const [todoPanelPayload, setTodoPanelPayload] = useState<TodoPanelPayload>(initialTodoPanelPayload ?? { noteId: "" });
   const [todoPanelTasks, setTodoPanelTasks] = useState<ObsidianTask[]>([]);
   const [todoPanelPinned, setTodoPanelPinned] = useState(false);
@@ -728,11 +847,28 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const paletteInputRef = useRef<HTMLInputElement>(null);
   const commandBarInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const resourcePanelRef = useRef<HTMLElement>(null);
+  const resourceFilterMotionReadyRef = useRef(false);
   const contextMenuRef = useRef<HTMLElement>(null);
   const contextEditTargetRef = useRef<HTMLElement | null>(null);
   const lastPointerRef = useRef({ x: 24, y: 24 });
   const dropInProgressRef = useRef(false);
+  const launchingResourceIdsRef = useRef(new Set<string>());
+  const resourceMotionTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const resourceDeletionInFlightRef = useRef(new Set<string>());
+  const resourceDeletionAnimationCompletedRef = useRef(new Set<string>());
+  const resourceDeletionBackendCompletedRef = useRef(new Set<string>());
   const activeGroupRef = useRef(activeGroup);
+
+  useEffect(() => {
+    return () => {
+      resourceMotionTimersRef.current.forEach((timer) => clearTimeout(timer));
+      resourceMotionTimersRef.current.clear();
+      resourceDeletionInFlightRef.current.clear();
+      resourceDeletionAnimationCompletedRef.current.clear();
+      resourceDeletionBackendCompletedRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     activeGroupRef.current = activeGroup;
@@ -1416,13 +1552,107 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setItems((previous) => upsertItemById(previous, item));
   }
 
-  function applyItemDeletion(id: string) {
+  function replaceResourceMotionTimer(key: string, durationMs: number, callback: () => void) {
+    const current = resourceMotionTimersRef.current.get(key);
+    if (current) clearTimeout(current);
+    if (durationMs <= 0) {
+      resourceMotionTimersRef.current.delete(key);
+      callback();
+      return;
+    }
+    const timer = setTimeout(() => {
+      resourceMotionTimersRef.current.delete(key);
+      callback();
+    }, durationMs);
+    resourceMotionTimersRef.current.set(key, timer);
+  }
+
+  function markResourcesAsNew(ids: string[]) {
+    if (document.documentElement.dataset.motion === "off") return;
+    const visibleIds = ids.filter(Boolean).slice(0, 8);
+    if (visibleIds.length === 0) return;
+    setNewResourceIds((previous) => Array.from(new Set([...previous, ...visibleIds])));
+  }
+
+  function completeNewResourceAnimation(id: string) {
+    setNewResourceIds((previous) =>
+      previous.includes(id)
+        ? previous.filter((candidate) => candidate !== id)
+        : previous
+    );
+  }
+
+  function beginItemDeletion(id: string) {
+    resourceDeletionInFlightRef.current.add(id);
+    resourceDeletionAnimationCompletedRef.current.delete(id);
+    resourceDeletionBackendCompletedRef.current.delete(id);
+    setDeletingResourceIds((previous) => (previous.includes(id) ? previous : [...previous, id]));
+  }
+
+  function finalizeItemDeletion(id: string) {
+    resourceDeletionInFlightRef.current.delete(id);
+    resourceDeletionAnimationCompletedRef.current.delete(id);
+    resourceDeletionBackendCompletedRef.current.delete(id);
     setItems((previous) => removeItemById(previous, id));
+    setDeletingResourceIds((previous) =>
+      previous.filter((candidate) => candidate !== id)
+    );
+    setNewResourceIds((previous) =>
+      previous.filter((candidate) => candidate !== id)
+    );
+    setResourceLaunchStates((previous) => {
+      if (!(id in previous)) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
     setTripCounts((previous) => {
       if (!(id in previous)) return previous;
       const next = { ...previous };
       delete next[id];
       return next;
+    });
+  }
+
+  function isResourceRowRendered(id: string) {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>("[data-resource-id]")
+    ).some((row) => row.dataset.resourceId === id);
+  }
+
+  function applyItemDeletion(id: string) {
+    if (!resourceDeletionInFlightRef.current.has(id)) {
+      // Deletions broadcast from another window have no local exit animation
+      // handshake. Apply them immediately instead of waiting for an
+      // animationend event that this renderer can never receive.
+      finalizeItemDeletion(id);
+      return;
+    }
+    resourceDeletionBackendCompletedRef.current.add(id);
+    if (
+      resourceDeletionAnimationCompletedRef.current.has(id) ||
+      !isResourceRowRendered(id)
+    ) {
+      finalizeItemDeletion(id);
+    }
+  }
+
+  function completeItemDeletionAnimation(id: string) {
+    if (!resourceDeletionInFlightRef.current.has(id)) return;
+    resourceDeletionAnimationCompletedRef.current.add(id);
+    if (resourceDeletionBackendCompletedRef.current.has(id)) {
+      finalizeItemDeletion(id);
+    }
+  }
+
+  function restoreFailedItemDeletion(id: string) {
+    resourceDeletionInFlightRef.current.delete(id);
+    resourceDeletionAnimationCompletedRef.current.delete(id);
+    resourceDeletionBackendCompletedRef.current.delete(id);
+    setDeletingResourceIds((previous) => previous.filter((candidate) => candidate !== id));
+    setResourceLaunchStates((previous) => ({ ...previous, [id]: "delete-error" }));
+    replaceResourceMotionTimer(`launch:${id}`, 1200, () => {
+      setResourceLaunchStates((previous) => ({ ...previous, [id]: "idle" }));
     });
   }
 
@@ -1781,7 +2011,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         setTimeout(() => {
           const el = document.getElementById(`droppable-subtag-wrapper-${subtagPath}`);
           if (el) {
-            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.scrollIntoView({ behavior: "auto", block: "center" });
             el.classList.add("focus-highlight");
             setTimeout(() => {
               el.classList.remove("focus-highlight");
@@ -1797,6 +2027,24 @@ export function MainApp({ windowLabel }: MainAppProps) {
       requestAnimationFrame(() => paletteInputRef.current?.focus());
     }
   }, [paletteOpen]);
+
+  useEffect(() => {
+    if (!paletteOpen) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`[data-palette-result-index="${paletteSelectedIndex}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  }, [paletteOpen, paletteSelectedIndex]);
+
+  useEffect(() => {
+    if (!commandBarOpen) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`[data-command-bar-result-index="${commandBarSelectedIndex}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  }, [commandBarOpen, commandBarSelectedIndex]);
 
   useEffect(() => {
     const trackPointer = (event: globalThis.PointerEvent) => {
@@ -1966,38 +2214,208 @@ export function MainApp({ windowLabel }: MainAppProps) {
     Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
   }, [activeTheme]);
 
-  const [activeLaunch, setActiveLaunch] = useState<any | null>(null);
+  const [activeLaunch, setActiveLaunch] =
+    useState<WorkspaceLaunchProgress | null>(null);
+  const [activeLaunchCancelPending, setActiveLaunchCancelPending] = useState(false);
+  const activeLaunchDismissTimerRef = useRef<number | null>(null);
+  const lastShownLaunchCompletionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const checkLaunch = () => {
-      try {
-        const raw = localStorage.getItem("orbitstart.plugin.workspaces.storage.active_launch");
-        if (raw) {
-          const data = JSON.parse(raw);
-          if (data && data.status === "running") {
-            setActiveLaunch(data);
-            return;
-          }
-        }
-        setActiveLaunch(null);
-      } catch {}
+    const clearDismissTimer = () => {
+      if (activeLaunchDismissTimerRef.current !== null) {
+        window.clearTimeout(activeLaunchDismissTimerRef.current);
+        activeLaunchDismissTimerRef.current = null;
+      }
     };
 
-    checkLaunch();
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === "orbitstart.plugin.workspaces.storage.active_launch") {
-        checkLaunch();
+    const checkLaunch = (allowCompleted: boolean) => {
+      try {
+        const launch = parseStoredWorkspaceLaunch(
+          localStorage.getItem(STORAGE_KEY_ACTIVE_LAUNCH)
+        );
+        if (!launch) {
+          clearDismissTimer();
+          setActiveLaunch(null);
+          return;
+        }
+
+        if (launch.status === "running") {
+          if (!allowCompleted) {
+            // A persisted running snapshot cannot survive a renderer/plugin
+            // restart. The plugin converts it to a completed cancellation on
+            // activation; never restore it as an indefinitely blocking layer.
+            clearDismissTimer();
+            setActiveLaunch(null);
+            return;
+          }
+          clearDismissTimer();
+          setActiveLaunch(launch);
+          return;
+        }
+
+        const completionKey = `${launch.workspaceId}:${launch.completedAt ?? 0}`;
+        const completionIsFresh =
+          launch.completedAt !== null &&
+          Date.now() - launch.completedAt >= 0 &&
+          Date.now() - launch.completedAt < 5000;
+        if (
+          !allowCompleted ||
+          !completionIsFresh ||
+          lastShownLaunchCompletionRef.current === completionKey
+        ) {
+          if (!allowCompleted || !completionIsFresh) {
+            setActiveLaunch(null);
+          }
+          return;
+        }
+
+        lastShownLaunchCompletionRef.current = completionKey;
+        clearDismissTimer();
+        setActiveLaunch(launch);
+        activeLaunchDismissTimerRef.current = window.setTimeout(() => {
+          setActiveLaunch((current) =>
+            current?.status === "done" &&
+            `${current.workspaceId}:${current.completedAt ?? 0}` === completionKey
+              ? null
+              : current
+          );
+          activeLaunchDismissTimerRef.current = null;
+        }, 1200);
+      } catch {
+        clearDismissTimer();
+        setActiveLaunch(null);
+      }
+    };
+
+    checkLaunch(false);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY_ACTIVE_LAUNCH) {
+        checkLaunch(true);
+      }
+    };
+    const handlePluginStorageChanged = (event: Event) => {
+      const detail = (event as CustomEvent<PluginStorageChangedDetail>).detail;
+      if (detail?.storageKey === STORAGE_KEY_ACTIVE_LAUNCH) {
+        checkLaunch(true);
       }
     };
     window.addEventListener("storage", handleStorage);
-    const timer = setInterval(checkLaunch, 250);
+    window.addEventListener(
+      PLUGIN_STORAGE_CHANGED_EVENT,
+      handlePluginStorageChanged
+    );
     return () => {
       window.removeEventListener("storage", handleStorage);
-      clearInterval(timer);
+      window.removeEventListener(
+        PLUGIN_STORAGE_CHANGED_EVENT,
+        handlePluginStorageChanged
+      );
+      clearDismissTimer();
     };
-  }, [pluginHostRevision]);
+  }, []);
+
+  useEffect(() => {
+    if (activeLaunch?.status !== "running") {
+      setActiveLaunchCancelPending(false);
+      return;
+    }
+    const lastHeartbeat =
+      activeLaunch.updatedAt || activeLaunch.startedAt || Date.now();
+    const remaining = Math.max(
+      0,
+      WORKSPACE_LAUNCH_STALE_AFTER_MS - (Date.now() - lastHeartbeat)
+    );
+    const timer = window.setTimeout(() => {
+      if (
+        !activeLaunch ||
+        activeLaunch.status !== "running" ||
+        Date.now() - (activeLaunch.updatedAt || activeLaunch.startedAt) <
+          WORKSPACE_LAUNCH_STALE_AFTER_MS
+      ) {
+        return;
+      }
+      const completedAt = Date.now();
+      const interrupted: WorkspaceLaunchProgress = {
+        ...activeLaunch,
+        currentStepId: null,
+        currentStepTitle: "启动进度长时间未更新",
+        status: "done",
+        result: "error",
+        updatedAt: completedAt,
+        completedAt,
+        errorMessage: "工作区运行器可能已中断；可以关闭此提示后重试。"
+      };
+      localStorage.setItem(
+        STORAGE_KEY_ACTIVE_LAUNCH,
+        JSON.stringify(interrupted)
+      );
+      setActiveLaunch(interrupted);
+      setActiveLaunchCancelPending(false);
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [activeLaunch]);
+
+  const activeLaunchVisualState = activeLaunch
+    ? activeLaunch.status === "running"
+      ? "running"
+      : activeLaunch.result === "success"
+        ? "success"
+        : activeLaunch.result === "cancelled"
+          ? "cancelled"
+        : "error"
+    : "idle";
+  const activeLaunchProgressRatio = activeLaunch
+    ? activeLaunch.totalSteps > 0
+      ? activeLaunch.status === "done" && activeLaunch.result !== "success"
+        ? Math.min(
+            1,
+            activeLaunch.completedStepIds.length / activeLaunch.totalSteps
+          )
+        : Math.min(1, activeLaunch.currentStepIndex / activeLaunch.totalSteps)
+      : activeLaunch.status === "done"
+        ? 1
+        : 0
+    : 0;
 
   const [dashboardWorkspaces, setDashboardWorkspaces] = useState<any[]>([]);
+
+  const cancelOrDismissWorkspaceLaunch = async () => {
+    if (!activeLaunch) return;
+    if (activeLaunch.status !== "running") {
+      setActiveLaunch(null);
+      return;
+    }
+    if (activeLaunchCancelPending) return;
+
+    setActiveLaunchCancelPending(true);
+    setActiveLaunch((current) =>
+      current?.status === "running"
+        ? { ...current, currentStepTitle: "正在取消工作区启动..." }
+        : current
+    );
+    try {
+      await pluginHost.commands.run("workspaces.cancel-active-launch");
+    } catch (error) {
+      const completedAt = Date.now();
+      const interrupted: WorkspaceLaunchProgress = {
+        ...activeLaunch,
+        currentStepId: null,
+        currentStepTitle: "无法联系工作区运行器",
+        status: "done",
+        result: "error",
+        updatedAt: completedAt,
+        completedAt,
+        errorMessage: `取消失败：${String(error)}`
+      };
+      localStorage.setItem(
+        STORAGE_KEY_ACTIVE_LAUNCH,
+        JSON.stringify(interrupted)
+      );
+      setActiveLaunch(interrupted);
+      setActiveLaunchCancelPending(false);
+      setToast(`取消工作区启动失败：${String(error)}`);
+    }
+  };
 
   useEffect(() => {
     if (activeView === "dashboard") {
@@ -2170,6 +2588,25 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setResourceRenderLimit(RESOURCE_RENDER_PAGE_SIZE);
   }, [activeGroup, query, items.length]);
 
+  useEffect(() => {
+    if (!resourceFilterMotionReadyRef.current) {
+      resourceFilterMotionReadyRef.current = true;
+      return;
+    }
+    const panel = resourcePanelRef.current;
+    const root = document.documentElement;
+    if (!panel || root.dataset.windowState === "hidden" || root.dataset.motion === "off") return;
+
+    const computed = getComputedStyle(root);
+    const duration = Number.parseFloat(computed.getPropertyValue("--motion-instant")) || 80;
+    const easing = computed.getPropertyValue("--ease-standard").trim() || "ease-out";
+    const animation = panel.animate(
+      [{ opacity: 0.96 }, { opacity: 1 }],
+      { duration, easing }
+    );
+    return () => animation.cancel();
+  }, [activeGroup]);
+
   const renderedItems = useMemo(
     () => filteredItems.slice(0, resourceRenderLimit),
     [filteredItems, resourceRenderLimit]
@@ -2221,6 +2658,18 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const workbenchShowActions = settings?.workbenchShowActions ?? true;
   const workbenchShowToast = settings?.workbenchShowToast ?? true;
   const workbenchShowStatistics = settings?.workbenchShowStatistics ?? true;
+  const [workbenchLayoutVisible, setWorkbenchLayoutVisible] = useState(workbenchVisible);
+
+  useLayoutEffect(() => {
+    if (workbenchVisible) {
+      setWorkbenchLayoutVisible(true);
+    } else if (items.length >= LARGE_CATALOG_MOTION_THRESHOLD) {
+      // This also covers settings changes broadcast from an auxiliary window:
+      // large catalogues collapse the grid before the exiting panel can hold
+      // the two-column layout for another animation frame.
+      setWorkbenchLayoutVisible(false);
+    }
+  }, [items.length, workbenchVisible]);
 
   const isLocalGalaxyTheme = activeTheme?.id === "local-galaxy";
   const themeLabel = activeTheme?.name ? activeTheme.name.toUpperCase() : "ORBITSTART";
@@ -2287,15 +2736,38 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }
 
   async function openItem(item: OrbitItem) {
-    setBusy(true);
+    if (launchingResourceIdsRef.current.has(item.id)) return;
+    launchingResourceIdsRef.current.add(item.id);
+    setResourceLaunchStates((previous) => ({ ...previous, [item.id]: "launching" }));
     try {
       const result = await launchItem(item.id, item.target);
       setToast(result);
-      await reload();
+      setItems((previous) =>
+        previous.map((candidate) =>
+          candidate.id === item.id
+            ? {
+                ...candidate,
+                launchCount: candidate.launchCount + 1,
+                lastLaunchedAt: new Date().toISOString()
+              }
+            : candidate
+        )
+      );
+      if (settings?.autoPinnedMode) {
+        await reload();
+      }
+      setResourceLaunchStates((previous) => ({ ...previous, [item.id]: "success" }));
+      replaceResourceMotionTimer(`launch:${item.id}`, 1200, () => {
+        setResourceLaunchStates((previous) => ({ ...previous, [item.id]: "idle" }));
+      });
     } catch (error) {
       setToast(`启动失败：${String(error)}`);
+      setResourceLaunchStates((previous) => ({ ...previous, [item.id]: "error" }));
+      replaceResourceMotionTimer(`launch:${item.id}`, 1200, () => {
+        setResourceLaunchStates((previous) => ({ ...previous, [item.id]: "idle" }));
+      });
     } finally {
-      setBusy(false);
+      launchingResourceIdsRef.current.delete(item.id);
     }
   }
 
@@ -2320,6 +2792,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
       let saved: OrbitItem;
       if (editor.mode === "create") {
         saved = await createItem(normalizedInput);
+        markResourcesAsNew([saved.id]);
         setToast(`已添加：${normalizedInput.title}`);
       } else {
         saved = await updateItem({
@@ -2347,6 +2820,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     try {
       const created = await createItemsFromPaths(cleanPaths, destinationGroup);
       setItems((previous) => upsertItemsById(previous, created));
+      markResourcesAsNew(created.map((item) => item.id));
       setActiveView("dashboard");
       if (destinationGroup) {
         setActiveGroup(destinationGroup);
@@ -2469,16 +2943,16 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }
 
   async function confirmRemoveItem(item: OrbitItem) {
-    setBusy(true);
+    if (resourceDeletionInFlightRef.current.has(item.id)) return;
+    beginItemDeletion(item.id);
+    setDialog(null);
     try {
       await deleteItem(item.id);
       applyItemDeletion(item.id);
       setToast(`已删除：${item.title}`);
-      setDialog(null);
     } catch (error) {
+      restoreFailedItemDeletion(item.id);
       setToast(`删除失败：${String(error)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -2704,17 +3178,27 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   async function confirmBatchDeleteSelected() {
     if (selectedIds.length === 0) return;
+    const idsToDelete = [...selectedIds];
+    const deletedIds = new Set<string>();
     setBusy(true);
+    setDialog(null);
     try {
-      for (const id of selectedIds) {
+      for (const id of idsToDelete) {
         await deleteItem(id);
+        // Batch deletion bypasses per-card exit animation so large selections
+        // cannot start hundreds of simultaneous animations.
+        finalizeItemDeletion(id);
+        deletedIds.add(id);
       }
       exitBatchMode();
-      setDialog(null);
-      await reload();
       setToast("批量删除完成");
     } catch (error) {
-      setToast(`批量删除失败：${String(error)}`);
+      setSelectedIds((current) => current.filter((id) => !deletedIds.has(id)));
+      setToast(
+        deletedIds.size > 0
+          ? `批量删除部分完成（已删除 ${deletedIds.size} 项）：${String(error)}`
+          : `批量删除失败：${String(error)}`
+      );
     } finally {
       setBusy(false);
     }
@@ -2825,12 +3309,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
             onToggleFavorite={toggleFavorite}
             onEdit={(selectedItem) => setEditor({ mode: "edit", item: selectedItem, input: inputFromItem(selectedItem) })}
             onDelete={removeItem}
+            onNewAnimationComplete={completeNewResourceAnimation}
+            onDeleteAnimationComplete={completeItemDeletionAnimation}
             resourceIconStyle={resourceIconStyle}
             renderIcon={Icon}
             formatLastLaunched={lastLaunchedText}
             hotkey={hotkeyBinderEnabled ? hotkeysBoundToItem[item.id] : undefined}
             isSimple={isSimple}
             densityFactor={densityFactor}
+            launchState={resourceLaunchStates[item.id] ?? "idle"}
+            isNew={newResourceIds.includes(item.id)}
+            isDeleting={deletingResourceIds.includes(item.id)}
           />
         ))}
       </SortableContext>
@@ -3058,6 +3547,25 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setToast(`密度已切换`);
     } catch (error) {
       setToast(`密度切换失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeMotionMode(next: MotionMode) {
+    setBusy(true);
+    try {
+      const nextSettings = await setMotionMode(next);
+      setSettings(nextSettings);
+      const labels: Record<MotionMode, string> = {
+        full: "完整",
+        standard: "标准",
+        minimal: "精简",
+        off: "关闭"
+      };
+      setToast(`动画等级已切换为：${labels[next]}`);
+    } catch (error) {
+      setToast(`动画等级切换失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -3562,6 +4070,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const toggleWorkbenchPanel = () => {
     const nextVisible = !workbenchVisible;
+    if (!nextVisible && items.length >= LARGE_CATALOG_MOTION_THRESHOLD) {
+      // Large catalogues reflow once, immediately. The outgoing workbench is
+      // temporarily overlaid so resource cards never receive per-item motion.
+      setWorkbenchLayoutVisible(false);
+    }
     void persistWorkbenchSetting("workbench_visible", nextVisible);
   };
 
@@ -3700,11 +4213,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
   }
 
   async function deleteObsidianVault(vault: ObsidianVaultConfig) {
-    if (!window.confirm(`移除 Obsidian Vault「${vault.name}」？这只会清理本地索引，不会删除原始笔记。`)) return;
     setBusy(true);
     try {
       await removeObsidianVault(vault.id);
       await refreshObsidian();
+      setObsidianVaultDeleteCandidate(null);
       setToast(`已移除 Obsidian Vault：${vault.name}`);
     } catch (error) {
       setToast(`移除 Obsidian Vault 失败：${String(error)}`);
@@ -3930,18 +4443,18 @@ export function MainApp({ windowLabel }: MainAppProps) {
             <span>新分组</span>
           </button>
         </div>
-        <button
+        <MotionTooltipButton
           type="button"
           className={`workbench-toggle-btn group-tabs-toggle ${workbenchVisible ? "active" : ""}`}
-          title={workbenchVisible ? "收起工作台" : "展开工作台"}
+          tooltip={workbenchVisible ? "收起工作台" : "展开工作台"}
           onClick={toggleWorkbenchPanel}
         >
           {workbenchVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-        </button>
+        </MotionTooltipButton>
       </section>
 
-      <section className={`dashboard-grid ${workbenchVisible ? "" : "workbench-collapsed"}`}>
-        <section className="surface-panel resource-panel">
+      <section className={`dashboard-grid ${workbenchLayoutVisible ? "" : "workbench-collapsed"}`}>
+        <section ref={resourcePanelRef} className="surface-panel resource-panel">
           <div className="section-head">
             <div>
               <p className="eyebrow">Resources</p>
@@ -3962,8 +4475,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </div>
 
-          {batchMode && (
-            <div className="batch-toolbar">
+          <MotionCollapse open={batchMode} className="batch-toolbar">
               <strong>已选 {selectedIds.length} 个</strong>
               <span className="batch-selection-hint">Shift + 点击可连续选择</span>
               <button type="button" onClick={selectAllCurrent}>全选当前</button>
@@ -3989,10 +4501,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 移动至子目录
               </button>
               <button type="button" className="danger-action" onClick={batchDeleteSelected} disabled={busy || selectedIds.length === 0}>删除</button>
-            </div>
-          )}
+          </MotionCollapse>
 
-          <div className={`resource-list display-${settings?.displayMode ?? "simple"}`}>
+          <div
+            className={`resource-list display-${settings?.displayMode ?? "simple"}`}
+            data-batch-mode={batchMode ? "true" : "false"}
+            data-resource-count={filteredItems.length}
+          >
             <DndContext
               sensors={batchMode ? [] : sensors}
               collisionDetection={customCollisionDetection}
@@ -4083,8 +4598,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </div>
         </section>
 
+        <AnimatePresence
+          initial={false}
+          onExitComplete={() => {
+            if (!workbenchVisible) setWorkbenchLayoutVisible(false);
+          }}
+        >
         {workbenchVisible && (
-          <aside className="surface-panel operations-panel resource-detail-panel">
+          <MotionWorkbenchPanel>
             <div className="resource-workbench-head">
               <div>
                 <p className="eyebrow">Workbench</p>
@@ -4143,14 +4664,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
                         <strong>{ws.name}</strong>
                         <span>已启动 {ws.launchCount || 0} 次</span>
                       </div>
-                      <button
+                      <MotionTooltipButton
                         type="button"
                         className="dashboard-ws-run-btn"
                         onClick={() => launchWorkspaceFromDashboard(ws.id)}
-                        title="启动此工作区"
+                        tooltip="启动此工作区"
                       >
                         <Play size={12} fill="currentColor" />
-                      </button>
+                      </MotionTooltipButton>
                     </div>
                   ))}
                 </div>
@@ -4177,11 +4698,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
             {workbenchShowToast && (
             <section className="toast-line">
               <CheckCircle2 size={18} />
-              <span>{toast}</span>
+              <MotionStatusSwap statusKey={toast}>{toast}</MotionStatusSwap>
             </section>
             )}
-          </aside>
+          </MotionWorkbenchPanel>
         )}
+        </AnimatePresence>
       </section>
     </section>
   );
@@ -4527,23 +5049,23 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     </span>
                   </button>
                   <div className="tile-actions obsidian-note-actions">
-                    <button title="Add to todo" onClick={() => void openTodoPanelForNote(note)} disabled={busy || note.taskCount === 0}>
+                    <MotionTooltipButton tooltip="添加到待办" onClick={() => void openTodoPanelForNote(note)} disabled={busy || note.taskCount === 0}>
                       <CheckCircle2 size={15} />
-                    </button>
-                    <button className={`favorite-action ${isFavorite ? "is-favorite" : ""}`} title="Favorite" onClick={() => void toggleObsidianNoteFavoriteAction(note)} disabled={busy}>
+                    </MotionTooltipButton>
+                    <MotionTooltipButton className={`favorite-action ${isFavorite ? "is-favorite" : ""}`} tooltip={isFavorite ? "取消星标" : "添加星标"} onClick={() => void toggleObsidianNoteFavoriteAction(note)} disabled={busy}>
                       {isFavorite ? <img src={localGalaxyAssets.icons.favoriteStar20.src} alt="" /> : <Star size={15} />}
-                    </button>
-                    <button title={linkedItem ? "Edit resource" : "Open note"} onClick={() => editObsidianNoteResource(note)} disabled={busy}>
+                    </MotionTooltipButton>
+                    <MotionTooltipButton tooltip={linkedItem ? "编辑资源" : "打开笔记"} onClick={() => editObsidianNoteResource(note)} disabled={busy}>
                       <Pencil size={15} />
-                    </button>
+                    </MotionTooltipButton>
                     {linkedItem ? (
-                      <button title="Remove from resource center" onClick={() => removeItem(linkedItem)} disabled={busy}>
+                      <MotionTooltipButton tooltip="从资源中心移除" onClick={() => removeItem(linkedItem)} disabled={busy}>
                         <Trash2 size={15} />
-                      </button>
+                      </MotionTooltipButton>
                     ) : (
-                      <button title="Add to resource center" onClick={() => void addObsidianNoteToResources(note)} disabled={busy}>
+                      <MotionTooltipButton tooltip="添加到资源中心" onClick={() => void addObsidianNoteToResources(note)} disabled={busy}>
                         <PlusCircle size={15} />
-                      </button>
+                      </MotionTooltipButton>
                     )}
                   </div>
                 </article>
@@ -4636,6 +5158,23 @@ export function MainApp({ windowLabel }: MainAppProps) {
               <option value="tray">隐藏到托盘</option>
               <option value="exit">直接退出</option>
             </select>
+          </label>
+          <label>
+            动画效果
+            <select
+              value={settings?.motionMode ?? bootstrapMotionMode}
+              onChange={(event) => void changeMotionMode(event.target.value as MotionMode)}
+              disabled={busy}
+              data-testid="motion-mode-select"
+            >
+              <option value="full">完整：包含品牌背景与连续效果</option>
+              <option value="standard">标准：推荐的桌面交互效果</option>
+              <option value="minimal">精简：仅保留必要反馈</option>
+              <option value="off">关闭：停用非必要动画</option>
+            </select>
+            <small className="setting-help">
+              系统开启“减少动态效果”时，OrbitStart 会自动限制为精简级。
+            </small>
           </label>
           <label className="setting-inline">
             <input type="checkbox" checked={Boolean(settings?.safeMode)} onChange={toggleSafeMode} />
@@ -5105,7 +5644,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 >
                   扫描
                 </button>
-                <button type="button" className="secondary-action compact-action danger-soft" onClick={() => void deleteObsidianVault(vault)} disabled={busy}>
+                <button type="button" className="secondary-action compact-action danger-soft" onClick={() => setObsidianVaultDeleteCandidate(vault)} disabled={busy}>
                   移除
                 </button>
               </div>
@@ -6278,12 +6817,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
             <div className="window-drag-fill" />
             <div className="window-controls" data-tauri-drag-region="false">
-              <button type="button" className={`pin-window ${todoPanelPinned ? "is-pinned" : ""}`} aria-label="Pin always on top" title={todoPanelPinned ? "Unpin" : "Pin always on top"} onClick={() => void toggleTodoPanelPin()}>
+              <MotionTooltipButton type="button" className={`pin-window ${todoPanelPinned ? "is-pinned" : ""}`} tooltip={todoPanelPinned ? "取消置顶" : "窗口置顶"} onClick={() => void toggleTodoPanelPin()}>
                 {todoPanelPinned ? <PinOff size={14} /> : <Pin size={14} />}
-              </button>
-              <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
-              <button type="button" aria-label="Maximize or restore" title="Maximize or restore" onClick={toggleMaximizeWindow}>□</button>
-              <button type="button" aria-label="Close" title="Close" className="close-window" onClick={closeWindow}>×</button>
+              </MotionTooltipButton>
+              <MotionTooltipButton type="button" tooltip="最小化" onClick={minimizeWindow}>-</MotionTooltipButton>
+              <MotionTooltipButton type="button" tooltip="最大化或还原" onClick={toggleMaximizeWindow}>□</MotionTooltipButton>
+              <MotionTooltipButton type="button" tooltip="关闭" className="close-window" onClick={closeWindow}>×</MotionTooltipButton>
             </div>
           </header>
 
@@ -6334,19 +6873,30 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </section>
         </main>
-        {contextMenu && renderContextMenu()}
+        <AnimatePresence initial={false}>
+          {contextMenu && (
+            <MotionPresenceLayer key={`${contextMenu.kind}-${contextMenu.x}-${contextMenu.y}`} kind="context">
+              {renderContextMenu()}
+            </MotionPresenceLayer>
+          )}
+        </AnimatePresence>
       </>
     );
   };
 
   if (isTodoPanelWindow) {
-    return renderTodoPanelWindow();
+    return (
+      <MotionProvider mode={settings?.motionMode ?? bootstrapMotionMode}>
+        {renderTodoPanelWindow()}
+      </MotionProvider>
+    );
   }
 
   if (isAuxWindow) {
     const auxTitle = auxPanel === "plugins" ? "插件管理" : auxPanel === "themes" ? "主题工作室" : auxPanel === "about" ? "关于 OrbitStart" : "设置";
     return (
-      <>
+      <MotionProvider mode={settings?.motionMode ?? bootstrapMotionMode}>
+        <>
         <main className={`app-shell aux-shell density-${density}`} style={appShellStyle} onContextMenu={handleAppContextMenu}>
           {isLocalGalaxyTheme && (
             <LocalGalaxyBackdrop
@@ -6366,30 +6916,78 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
             <div className="window-drag-fill" />
             <div className="window-controls" data-tauri-drag-region="false">
-              <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
-              <button type="button" aria-label="Maximize or restore" title="Maximize or restore" onClick={toggleMaximizeWindow}>□</button>
-              <button type="button" aria-label="Close" title="Close" className="close-window" onClick={closeWindow}>×</button>
+              <MotionTooltipButton type="button" tooltip="最小化" onClick={minimizeWindow}>-</MotionTooltipButton>
+              <MotionTooltipButton type="button" tooltip="最大化或还原" onClick={toggleMaximizeWindow}>□</MotionTooltipButton>
+              <MotionTooltipButton type="button" tooltip="关闭" className="close-window" onClick={closeWindow}>×</MotionTooltipButton>
             </div>
           </header>
           <section className="aux-workspace">
             {auxPanel === "about" ? renderAbout() : renderSettings()}
           </section>
-          {dialog && renderAppDialog()}
-          {selectedPlugin && renderPluginDetail()}
-          {backupOpen && renderBackupDialog()}
-          {importPreview && renderImportPreviewDialog()}
-          {resourcePathRepairOpen && renderResourcePathRepairDialog()}
+          <AnimatePresence initial={false}>
+            {dialog && (
+              <MotionPresenceLayer key={`dialog-${dialog.type}`}>
+                {renderAppDialog()}
+              </MotionPresenceLayer>
+            )}
+          </AnimatePresence>
+          <AnimatePresence initial={false}>
+            {selectedPlugin && (
+              <MotionPresenceLayer key={`plugin-${selectedPlugin.id}`}>
+                {renderPluginDetail()}
+              </MotionPresenceLayer>
+            )}
+            {backupOpen && (
+              <MotionPresenceLayer key="backup">
+                {renderBackupDialog()}
+              </MotionPresenceLayer>
+            )}
+            {importPreview && (
+              <MotionPresenceLayer key="import-preview">
+                {renderImportPreviewDialog()}
+              </MotionPresenceLayer>
+            )}
+            {resourcePathRepairOpen && (
+              <MotionPresenceLayer key="path-repair">
+                {renderResourcePathRepairDialog()}
+              </MotionPresenceLayer>
+            )}
+          </AnimatePresence>
         </main>
-        {contextMenu && renderContextMenu()}
-      </>
+        <AnimatePresence initial={false}>
+          {contextMenu && (
+            <MotionPresenceLayer key={`${contextMenu.kind}-${contextMenu.x}-${contextMenu.y}`} kind="context">
+              {renderContextMenu()}
+            </MotionPresenceLayer>
+          )}
+        </AnimatePresence>
+        </>
+      </MotionProvider>
     );
   }
 
+  const activeSearchValue =
+    activeView === "dashboard"
+      ? query
+      : activeView === "trips"
+        ? tripsQuery
+        : obsidianQuery;
+
+  const clearActiveSearch = () => {
+    if (activeView === "dashboard") setQuery("");
+    else if (activeView === "trips") setTripsQuery("");
+    else setObsidianQuery("");
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
+
   return (
-    <>
-      {showOnboarding && (
-        <Suspense fallback={null}>
-          <OnboardingWizard
+    <MotionProvider mode={settings?.motionMode ?? bootstrapMotionMode}>
+      <>
+      <AnimatePresence initial={false}>
+        {showOnboarding && (
+          <MotionPresenceLayer key="onboarding">
+            <Suspense fallback={null}>
+              <OnboardingWizard
           visible={!importPreview}
           onTemplateSelected={async (tags, groups) => {
             // Resolve current Windows username to replace [user] placeholders in template paths
@@ -6472,9 +7070,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
             setShowOnboarding(false);
             setToast("欢迎使用 OrbitStart！按 Ctrl+K 随时唤起命令面板");
           }}
-          />
-        </Suspense>
-      )}
+              />
+            </Suspense>
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
       <main className={`app-shell density-${density} view-${activeView}`} style={appShellStyle} onContextMenu={handleAppContextMenu}>
       {isLocalGalaxyTheme && (
         <LocalGalaxyBackdrop
@@ -6484,6 +7084,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           topGlowOpacity={activeView === "dashboard" ? 0.16 : 0.12}
           orbitOpacity={activeView === "settings" ? 0.1 : 0.08}
           showOrbitLayer={activeView !== "logs"}
+          continuous
         />
       )}
       <WindowResizeEdges />
@@ -6494,9 +7095,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </div>
         <div className="window-drag-fill" />
         <div className="window-controls" data-tauri-drag-region="false">
-          <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
-          <button type="button" aria-label="Maximize or restore" title="Maximize or restore" onClick={toggleMaximizeWindow}>□</button>
-          <button type="button" aria-label="Close" title="Close" className="close-window" onClick={closeWindow}>×</button>
+          <MotionTooltipButton type="button" tooltip="最小化" onClick={minimizeWindow}>-</MotionTooltipButton>
+          <MotionTooltipButton type="button" tooltip="最大化或还原" onClick={toggleMaximizeWindow}>□</MotionTooltipButton>
+          <MotionTooltipButton type="button" tooltip="关闭" className="close-window" onClick={closeWindow}>×</MotionTooltipButton>
         </div>
       </header>
       <aside className="sidebar">
@@ -6512,58 +7113,72 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
         <nav className="rail" aria-label="主导航">
           {navItems.map((item) => (
-            <button type="button" key={item.id} className={`rail-button ${activeView === item.id ? "active" : ""}`} title={item.title} onClick={() => setActiveView(item.id)}>
-              {item.icon}
-            </button>
+            <MotionTooltip key={item.id} label={item.title}>
+              <button
+                type="button"
+                className={`rail-button ${activeView === item.id ? "active" : ""}`}
+                aria-label={item.title}
+                onClick={() => setActiveView(item.id)}
+              >
+                {item.icon}
+              </button>
+            </MotionTooltip>
           ))}
-          <button type="button" className="rail-button" title="命令面板" onClick={() => setPaletteOpen(true)}>
-            <Command size={21} />
-          </button>
+          <MotionTooltip label="命令面板">
+            <button type="button" className="rail-button" aria-label="命令面板" onClick={() => setPaletteOpen(true)}>
+              <Command size={21} />
+            </button>
+          </MotionTooltip>
         </nav>
 
-        <button
-          type="button"
-          className={`sidebar-cosmic-settings-btn ${localAuxPanel ? "active" : ""}`}
-          title="系统设置"
-          onClick={() => void openPanelWindow("settings")}
-          style={{ marginTop: "auto" }}
-        >
-          <Settings size={22} className="settings-gear" />
-        </button>
+        <MotionTooltip label="系统设置" placement="top">
+          <button
+            type="button"
+            className={`sidebar-cosmic-settings-btn ${localAuxPanel ? "active" : ""}`}
+            aria-label="系统设置"
+            onClick={() => void openPanelWindow("settings")}
+            style={{ marginTop: "auto" }}
+          >
+            <Settings size={22} className="settings-gear" />
+          </button>
+        </MotionTooltip>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div>
+          <div data-motion-title={activeView}>
             <p className="eyebrow">{themeLabel} · {settings?.globalHotkey ?? "Ctrl+Alt+Space"}</p>
             <h1>{activeViewMeta[activeView].title}</h1>
             <span className="title-subtitle">{activeViewMeta[activeView].subtitle}</span>
           </div>
           {activeView === "dashboard" && (
             <div className="top-actions">
-              <div className="density-slider-container" title={`界面密度: ${densityValue}%`}>
-                <SlidersHorizontal size={15} className="density-slider-icon" />
-                <input
-                  type="range"
-                  className="density-slider"
-                  min="0"
-                  max="100"
-                  value={densityValue}
-                  onChange={handleDensityChange}
-                />
-              </div>
-              <button type="button" className="icon-action" title="主题工作室" onClick={() => void openPanelWindow("themes")}>
+              <MotionTooltip label={`界面密度：${densityValue}%`} placement="top">
+                <div className="density-slider-container">
+                  <SlidersHorizontal size={15} className="density-slider-icon" />
+                  <input
+                    type="range"
+                    className="density-slider"
+                    min="0"
+                    max="100"
+                    aria-label={`界面密度：${densityValue}%`}
+                    value={densityValue}
+                    onChange={handleDensityChange}
+                  />
+                </div>
+              </MotionTooltip>
+              <MotionTooltipButton type="button" className="icon-action" tooltip="主题工作室" onClick={() => void openPanelWindow("themes")}>
                 <Palette size={19} />
-              </button>
-              <button type="button" className="icon-action" title="扫描本地程序" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
+              </MotionTooltipButton>
+              <MotionTooltipButton type="button" className="icon-action" tooltip="扫描本地程序" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
                 <ScanSearch size={19} />
-              </button>
-              <button type="button" className="icon-action" title="数据备份" onClick={() => setBackupOpen(true)}>
+              </MotionTooltipButton>
+              <MotionTooltipButton type="button" className="icon-action" tooltip="数据备份" onClick={() => setBackupOpen(true)}>
                 <Database size={19} />
-              </button>
-              <button type="button" className="icon-action" title="命令面板" onClick={() => setPaletteOpen(true)}>
+              </MotionTooltipButton>
+              <MotionTooltipButton type="button" className="icon-action" tooltip="命令面板" onClick={() => setPaletteOpen(true)}>
                 <Search size={19} />
-              </button>
+              </MotionTooltipButton>
             </div>
           )}
         </header>
@@ -6599,7 +7214,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     : "搜索笔记标题、路径、Vault 或标签..."
                 }
               />
-              <kbd>Ctrl K</kbd>
+              <div className="search-shell-actions">
+                {activeSearchValue && (
+                  <button
+                    type="button"
+                    className="search-clear-button"
+                    aria-label="清空搜索"
+                    data-motion-icon-button
+                    onClick={clearActiveSearch}
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                )}
+                <kbd>Ctrl K</kbd>
+              </div>
             </div>
             {activeView === "dashboard" && (
               <button type="button" className="primary-action" onClick={() => setEditor({ mode: "create", input: makeEmptyInput() })} disabled={busy}>
@@ -6610,16 +7238,22 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </section>
         )}
 
-        {activeView === "dashboard" && renderDashboard()}
-        {activeView === "trips" && tripsFeatureEnabled && renderTripsPage()}
-        {activeView === "obsidian" && obsidianFeatureEnabled && renderObsidianPage()}
-        {activeView === "workspaces" && workspacesFeatureEnabled && (
-          <Suspense fallback={null}>
-            <Workspaces pluginHost={pluginHost} items={items} />
-          </Suspense>
-        )}
-        {activeView === "settings" && renderSettings()}
-        {activeView === "logs" && renderLogs()}
+        <div className="motion-page-stack">
+          <AnimatePresence initial={false}>
+            <MotionPage key={activeView} className="motion-page-content" data-motion-page={activeView}>
+              {activeView === "dashboard" && renderDashboard()}
+              {activeView === "trips" && tripsFeatureEnabled && renderTripsPage()}
+              {activeView === "obsidian" && obsidianFeatureEnabled && renderObsidianPage()}
+              {activeView === "workspaces" && workspacesFeatureEnabled && (
+                <Suspense fallback={null}>
+                  <Workspaces pluginHost={pluginHost} items={items} />
+                </Suspense>
+              )}
+              {activeView === "settings" && renderSettings()}
+              {activeView === "logs" && renderLogs()}
+            </MotionPage>
+          </AnimatePresence>
+        </div>
       </section>
 
       {dragActive && (
@@ -6638,23 +7272,35 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
 
 
-      {dialog && renderAppDialog()}
+      <AnimatePresence initial={false}>
+        {dialog && (
+          <MotionPresenceLayer key={`dialog-${dialog.type}`}>
+            {renderAppDialog()}
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
 
-      {tripsFeatureEnabled && tripPanelItem && (
-        <Suspense fallback={null}>
-          <TripPanel
-          item={tripPanelItem}
-          highlightTripId={tripPanelHighlightId}
-          onClose={() => {
-            setTripPanelItem(null);
-            setTripPanelHighlightId(null);
-          }}
-          onChanged={handleTripsChanged}
-          />
-        </Suspense>
-      )}
+      <AnimatePresence initial={false}>
+        {tripsFeatureEnabled && tripPanelItem && (
+          <MotionPresenceLayer key={`trips-${tripPanelItem.id}`}>
+            <Suspense fallback={null}>
+              <TripPanel
+                item={tripPanelItem}
+                highlightTripId={tripPanelHighlightId}
+                onClose={() => {
+                  setTripPanelItem(null);
+                  setTripPanelHighlightId(null);
+                }}
+                onChanged={handleTripsChanged}
+              />
+            </Suspense>
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
 
+      <AnimatePresence initial={false}>
       {paletteOpen && (
+        <MotionPresenceLayer key="command-palette" kind="command">
         <section
           className="palette-backdrop"
           role="dialog"
@@ -6673,13 +7319,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 autoFocus
               />
               {paletteQuery ? (
-                <button type="button" title="清空" onClick={() => setPaletteQuery("")} className="palette-clear-btn">
-                  <X size={16} />
-                </button>
+                <MotionTooltip label="清空搜索" placement="top">
+                  <button type="button" aria-label="清空搜索" onClick={() => setPaletteQuery("")} className="palette-clear-btn">
+                    <X size={16} />
+                  </button>
+                </MotionTooltip>
               ) : (
-                <button type="button" title="关闭" onClick={() => setPaletteOpen(false)}>
-                  <X size={18} />
-                </button>
+                <MotionTooltip label="关闭命令面板" placement="top">
+                  <button type="button" aria-label="关闭命令面板" onClick={() => setPaletteOpen(false)}>
+                    <X size={18} />
+                  </button>
+                </MotionTooltip>
               )}
             </div>
             <div className="palette-results">
@@ -6694,6 +7344,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button
                   type="button"
                   key={result.id}
+                  data-palette-result-index={idx}
                   data-resource-id={result.resourceId}
                   className={idx === paletteSelectedIndex ? "result-selected" : ""}
                   onClick={async () => {
@@ -6716,9 +7367,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </div>
         </section>
+        </MotionPresenceLayer>
       )}
+      </AnimatePresence>
 
-      {commandBarOpen && createPortal(
+      {createPortal(
+        <AnimatePresence initial={false}>
+        {commandBarOpen && (
+        <MotionPresenceLayer key="command-bar" kind="command">
         <section
           className="palette-backdrop"
           role="dialog"
@@ -6737,13 +7393,17 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 autoFocus
               />
               {commandBarQuery ? (
-                <button type="button" title="清空" onClick={() => setCommandBarQuery("")} className="palette-clear-btn">
-                  <X size={16} />
-                </button>
+                <MotionTooltip label="清空搜索" placement="top">
+                  <button type="button" aria-label="清空搜索" onClick={() => setCommandBarQuery("")} className="palette-clear-btn">
+                    <X size={16} />
+                  </button>
+                </MotionTooltip>
               ) : (
-                <button type="button" title="关闭" onClick={() => setCommandBarOpen(false)}>
-                  <X size={18} />
-                </button>
+                <MotionTooltip label="关闭命令栏" placement="top">
+                  <button type="button" aria-label="关闭命令栏" onClick={() => setCommandBarOpen(false)}>
+                    <X size={18} />
+                  </button>
+                </MotionTooltip>
               )}
             </div>
             <div className="palette-results">
@@ -6757,6 +7417,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button
                   type="button"
                   key={result.id}
+                  data-command-bar-result-index={idx}
                   data-resource-id={result.resourceId}
                   className={idx === commandBarSelectedIndex ? "result-selected" : ""}
                   onClick={async () => {
@@ -6780,12 +7441,23 @@ export function MainApp({ windowLabel }: MainAppProps) {
               ))}
             </div>
           </div>
-        </section>,
+        </section>
+        </MotionPresenceLayer>
+        )}
+        </AnimatePresence>,
         document.body
       )}
 
-      {editor && renderResourceEditorDialog()}
+      <AnimatePresence initial={false}>
+        {editor && (
+          <MotionPresenceLayer key={`editor-${editor.mode}`}>
+            {renderResourceEditorDialog()}
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
+      <AnimatePresence initial={false}>
       {selectedPlugin && (
+        <MotionPresenceLayer key={`plugin-detail-${selectedPlugin.id}`}>
         <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setSelectedPlugin(null); }}>
           <div className="modal-panel plugin-detail-panel">
             <div className="modal-head">
@@ -6840,9 +7512,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </div>
         </section>
+        </MotionPresenceLayer>
       )}
+      </AnimatePresence>
 
+      <AnimatePresence initial={false}>
       {backupOpen && (
+        <MotionPresenceLayer key="backup-dialog">
         <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setBackupOpen(false); }}>
           <div className="modal-panel backup-panel">
             <div className="modal-head">
@@ -6872,9 +7548,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </div>
         </section>
+        </MotionPresenceLayer>
       )}
+      </AnimatePresence>
 
+      <AnimatePresence initial={false}>
       {localAuxPanel && (
+        <MotionPresenceLayer key={`aux-${localAuxPanel}`} kind="drawer">
         <section className="palette-backdrop centered-backdrop aux-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setLocalAuxPanel(null); }}>
           <div className="modal-panel settings-modal-panel">
             <div className="modal-head">
@@ -6882,27 +7562,74 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <p className="eyebrow">{localAuxPanel === "plugins" ? "Plugins" : localAuxPanel === "themes" ? "Themes" : localAuxPanel === "about" ? "About" : "Settings"}</p>
                 <h2>{localAuxPanel === "plugins" ? "插件管理" : localAuxPanel === "themes" ? "主题工作室" : localAuxPanel === "about" ? "关于 OrbitStart" : "系统设置"}</h2>
               </div>
-              <button type="button" className="icon-action" onClick={() => setLocalAuxPanel(null)}>
+              <MotionTooltipButton
+                type="button"
+                className="icon-action"
+                tooltip="关闭"
+                onClick={() => setLocalAuxPanel(null)}
+              >
                 <X size={18} />
-              </button>
+              </MotionTooltipButton>
             </div>
             <div className="aux-workspace" style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
               {localAuxPanel === "about" ? renderAbout() : renderSettings()}
             </div>
           </div>
         </section>
+        </MotionPresenceLayer>
       )}
-      {importPreview && renderImportPreviewDialog()}
-      {resourcePathRepairOpen && renderResourcePathRepairDialog()}
+      </AnimatePresence>
+      <AnimatePresence initial={false}>
+        {importPreview && (
+          <MotionPresenceLayer key="import-preview">
+            {renderImportPreviewDialog()}
+          </MotionPresenceLayer>
+        )}
+        {resourcePathRepairOpen && (
+          <MotionPresenceLayer key="path-repair">
+            {renderResourcePathRepairDialog()}
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
       </main>
+      <AnimatePresence initial={false}>
       {activeLaunch && (
-        <div className="workspace-launch-progress-overlay">
-          <div className="workspace-launch-progress-panel">
+        <MotionPresenceLayer key={activeLaunch.workspaceId ?? activeLaunch.workspaceName} kind="fade">
+        <div
+          className="workspace-launch-progress-overlay"
+          data-motion-launch-state={activeLaunchVisualState}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="workspace-launch-progress-title"
+        >
+          <div className="workspace-launch-progress-panel" aria-live="polite">
             <div className="launch-panel-header">
-              <Workflow size={20} className="spin-slow" />
+              <MotionStatusSwap statusKey={activeLaunchVisualState}>
+                {activeLaunchVisualState === "running" ? (
+                  <Workflow size={20} className="spin-slow" />
+                ) : activeLaunchVisualState === "success" ? (
+                  <CheckCircle2 size={20} />
+                ) : activeLaunchVisualState === "cancelled" ? (
+                  <X size={20} />
+                ) : (
+                  <ShieldAlert size={20} />
+                )}
+              </MotionStatusSwap>
               <div>
-                <h3>正在启动工作区</h3>
-                <p>{activeLaunch.workspaceName}</p>
+                <MotionStatusSwap
+                  statusKey={activeLaunchVisualState}
+                  className="launch-panel-title"
+                  id="workspace-launch-progress-title"
+                >
+                  {activeLaunchVisualState === "running"
+                    ? "正在启动工作区"
+                    : activeLaunchVisualState === "success"
+                      ? "工作区启动完成"
+                      : activeLaunchVisualState === "cancelled"
+                        ? "工作区启动已取消"
+                      : "工作区启动时遇到问题"}
+                </MotionStatusSwap>
+                <p>{activeLaunch.workspaceName || "当前工作区"}</p>
               </div>
             </div>
             
@@ -6910,19 +7637,57 @@ export function MainApp({ windowLabel }: MainAppProps) {
               <div 
                 className="launch-progress-bar-fill" 
                 style={{ 
-                  width: `${(activeLaunch.currentStepIndex / activeLaunch.totalSteps) * 100}%` 
+                  transform: `scaleX(${activeLaunchProgressRatio})`,
+                  transformOrigin: "left center"
                 }}
               />
             </div>
             
             <div className="launch-panel-footer">
-              <span>步骤 {activeLaunch.currentStepIndex + 1} / {activeLaunch.totalSteps}</span>
-              <strong>{activeLaunch.currentStepTitle}</strong>
+              <span>
+                {activeLaunch.totalSteps > 0
+                  ? activeLaunch.status === "running"
+                    ? `步骤 ${activeLaunch.currentStepId ? activeLaunch.currentStepIndex + 1 : 0} / ${activeLaunch.totalSteps}`
+                    : `完成 ${activeLaunch.completedStepIds.length} / ${activeLaunch.totalSteps}`
+                  : "无需启动步骤"}
+              </span>
+              <MotionStatusSwap
+                statusKey={`${activeLaunchVisualState}:${activeLaunch.currentStepIndex}:${activeLaunch.currentStepTitle}`}
+              >
+                {activeLaunch.errorMessage ||
+                  activeLaunch.currentStepTitle ||
+                  "正在准备工作区"}
+              </MotionStatusSwap>
+            </div>
+            <div className="launch-panel-actions">
+              <button
+                type="button"
+                className="secondary-action compact-action"
+                data-workspace-launch-action={
+                  activeLaunch.status === "running" ? "cancel" : "dismiss"
+                }
+                onClick={() => void cancelOrDismissWorkspaceLaunch()}
+                disabled={
+                  activeLaunch.status === "running" &&
+                  activeLaunchCancelPending
+                }
+              >
+                {activeLaunch.status === "running"
+                  ? activeLaunchCancelPending
+                    ? "正在取消…"
+                    : "取消启动"
+                  : "关闭"}
+              </button>
             </div>
           </div>
         </div>
+        </MotionPresenceLayer>
       )}
-      {subTagSelectModal?.isOpen && createPortal(
+      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence initial={false}>
+        {subTagSelectModal?.isOpen && (
+        <MotionPresenceLayer key="subtag-selector">
         <section
           className="dialog-backdrop"
           role="dialog"
@@ -6960,9 +7725,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   autoFocus
                 />
                 {subTagSelectSearch && (
-                  <button type="button" title="清空" onClick={() => setSubTagSelectSearch("")} className="palette-clear-btn" style={{ right: "8px" }}>
+                  <MotionTooltipButton type="button" tooltip="清空搜索" onClick={() => setSubTagSelectSearch("")} className="palette-clear-btn" style={{ right: "8px" }}>
                     <X size={14} />
-                  </button>
+                  </MotionTooltipButton>
                 )}
               </div>
               
@@ -7045,10 +7810,55 @@ export function MainApp({ windowLabel }: MainAppProps) {
               </div>
             </div>
           </div>
-        </section>,
+        </section>
+        </MotionPresenceLayer>
+        )}
+        </AnimatePresence>,
         document.body
       )}
-      {contextMenu && renderContextMenu()}
-    </>
+      <MotionDialog
+        open={Boolean(obsidianVaultDeleteCandidate)}
+        backdropClassName="palette-backdrop centered-backdrop"
+        className="modal-panel"
+        ariaLabelledBy="obsidian-vault-delete-title"
+        onBackdropClick={() => {
+          if (!busy) setObsidianVaultDeleteCandidate(null);
+        }}
+      >
+        <div className="modal-head">
+          <div>
+            <p className="eyebrow">Remove Vault</p>
+            <h2 id="obsidian-vault-delete-title">移除 Obsidian Vault</h2>
+          </div>
+        </div>
+        <p>
+          确定移除「{obsidianVaultDeleteCandidate?.name}」？这只会清理 OrbitStart
+          的本地索引，不会删除原始笔记。
+        </p>
+        <div className="modal-actions">
+          <button type="button" className="secondary-action" onClick={() => setObsidianVaultDeleteCandidate(null)} disabled={busy}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="danger-action"
+            onClick={() => {
+              if (obsidianVaultDeleteCandidate) void deleteObsidianVault(obsidianVaultDeleteCandidate);
+            }}
+            disabled={busy}
+          >
+            移除
+          </button>
+        </div>
+      </MotionDialog>
+      <AnimatePresence initial={false}>
+        {contextMenu && (
+          <MotionPresenceLayer key={`${contextMenu.kind}-${contextMenu.x}-${contextMenu.y}`} kind="context">
+            {renderContextMenu()}
+          </MotionPresenceLayer>
+        )}
+      </AnimatePresence>
+      </>
+    </MotionProvider>
   );
 }

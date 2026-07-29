@@ -7,6 +7,7 @@ interface LocalGalaxyBackdropProps {
   topGlowOpacity?: number;
   orbitOpacity?: number;
   showOrbitLayer?: boolean;
+  continuous?: boolean;
 }
 
 export function LocalGalaxyBackdrop({
@@ -15,10 +16,15 @@ export function LocalGalaxyBackdrop({
   starOpacity = 0.16,
   topGlowOpacity = 0.14,
   orbitOpacity = 0.08,
-  showOrbitLayer = true
+  showOrbitLayer = true,
+  continuous = false
 }: LocalGalaxyBackdropProps) {
   return (
-    <div className="local-galaxy-backdrop" aria-hidden="true">
+    <div
+      className="local-galaxy-backdrop"
+      aria-hidden="true"
+      data-motion-continuous={continuous ? "" : undefined}
+    >
       <img
         className="galaxy-layer galaxy-layer-main"
         src={localGalaxyAssets.backgrounds.main.src}

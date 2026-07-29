@@ -26,7 +26,9 @@ function themeCard(page: Page, name: string) {
 }
 
 async function openThemeSettings(page: Page) {
-  await page.goto('/?view=settings&panel=themes');
+  await page.goto('/?view=settings&panel=themes', {
+    waitUntil: 'domcontentloaded'
+  });
   await expect(page.locator('.app-shell')).toBeVisible();
   await expect(page.locator('.settings-shell')).toBeVisible();
   await expect(page.locator('.theme-settings')).toBeVisible();

@@ -80,7 +80,7 @@ test.describe('OrbitStart E2E Basic Verification', () => {
   });
 
   test('should filter and select scanned items in the import preview', async ({ page }) => {
-    const scanButton = page.locator('.icon-action[title="扫描本地程序"]');
+    const scanButton = page.locator('button[aria-label="扫描本地程序"]');
     await expect(scanButton).toBeEnabled();
     await scanButton.click();
 
@@ -309,10 +309,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.8.4 on the about page', async ({ page }) => {
+  test('should show version 0.8.6 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.8.4');
+    await expect(page.locator('.about-card')).toContainText('0.8.6');
   });
 
   test('should expose a manual update check with browser-environment feedback', async ({ page }) => {

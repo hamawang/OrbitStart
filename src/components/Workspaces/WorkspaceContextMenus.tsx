@@ -1,5 +1,7 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { Clipboard, Copy, Edit3, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AnimatePresence, m, useIsPresent } from "motion/react";
+import { motionVariants, useMotionPolicy, useMotionTransition } from "../../motion";
 import type { NodeContextMenu, WorkspaceContextMenu, WorkspaceStep } from "./types";
 
 interface WorkspaceContextMenusProps {
@@ -33,7 +35,8 @@ const menuStyle = (x: number, y: number, minWidth: string): CSSProperties => ({
   boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05)",
   display: "flex",
   flexDirection: "column",
-  gap: "2px"
+  gap: "2px",
+  transformOrigin: "top left"
 });
 
 const menuItemStyle = (padding: string, danger = false): CSSProperties => ({
@@ -49,7 +52,7 @@ const menuItemStyle = (padding: string, danger = false): CSSProperties => ({
   alignItems: "center",
   gap: "8px",
   width: "100%",
-  transition: "all 0.15s ease"
+  transition: "background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard)"
 });
 
 interface ContextMenuActionProps {
@@ -72,6 +75,55 @@ function ContextMenuAction({ children, onClick, padding, danger = false }: Conte
   );
 }
 
+function ContextMenuSurface({
+  children,
+  x,
+  y,
+  minWidth,
+  kind
+}: {
+  children: ReactNode;
+  x: number;
+  y: number;
+  minWidth: string;
+  kind: "workspace" | "node";
+}) {
+  const transition = useMotionTransition("context");
+  const exitTransition = useMotionTransition("contextExit");
+  const { transformsEnabled } = useMotionPolicy();
+  const isPresent = useIsPresent();
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    if (isPresent) menu.removeAttribute("inert");
+    else menu.setAttribute("inert", "");
+  }, [isPresent]);
+
+  return (
+    <m.div
+      ref={menuRef}
+      className="workspace-custom-contextmenu glass-panel"
+      style={{
+        ...menuStyle(x, y, minWidth),
+        pointerEvents: isPresent ? "auto" : "none"
+      }}
+      variants={transformsEnabled ? motionVariants.contextMenu : motionVariants.fade}
+      initial="hidden"
+      animate="visible"
+      exit={{ opacity: 0, transition: exitTransition }}
+      transition={transition}
+      data-motion-context-menu={kind}
+      data-presence={isPresent ? "present" : "exiting"}
+      aria-hidden={!isPresent}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {children}
+    </m.div>
+  );
+}
+
 export function WorkspaceContextMenus({
   workspaceContextMenu,
   nodeContextMenu,
@@ -90,11 +142,14 @@ export function WorkspaceContextMenus({
 }: WorkspaceContextMenusProps) {
   return (
     <>
+      <AnimatePresence initial={false}>
       {workspaceContextMenu && (
-        <div
-          className="workspace-custom-contextmenu glass-panel"
-          style={menuStyle(workspaceContextMenu.x, workspaceContextMenu.y, "130px")}
-          onClick={(event) => event.stopPropagation()}
+        <ContextMenuSurface
+          key={`workspace-${workspaceContextMenu.workspace.id}`}
+          x={workspaceContextMenu.x}
+          y={workspaceContextMenu.y}
+          minWidth="130px"
+          kind="workspace"
         >
           <ContextMenuAction
             padding="6px 12px"
@@ -128,14 +183,18 @@ export function WorkspaceContextMenus({
             <Trash2 size={14} />
             <span>删除工作区</span>
           </ContextMenuAction>
-        </div>
+        </ContextMenuSurface>
       )}
+      </AnimatePresence>
 
+      <AnimatePresence initial={false}>
       {nodeContextMenu && (
-        <div
-          className="workspace-custom-contextmenu glass-panel"
-          style={menuStyle(nodeContextMenu.x, nodeContextMenu.y, "120px")}
-          onClick={(event) => event.stopPropagation()}
+        <ContextMenuSurface
+          key={`node-${nodeContextMenu.nodeId}`}
+          x={nodeContextMenu.x}
+          y={nodeContextMenu.y}
+          minWidth="120px"
+          kind="node"
         >
           <ContextMenuAction
             padding="8px 12px"
@@ -205,8 +264,9 @@ export function WorkspaceContextMenus({
               </ContextMenuAction>
             </>
           )}
-        </div>
+        </ContextMenuSurface>
       )}
+      </AnimatePresence>
     </>
   );
 }

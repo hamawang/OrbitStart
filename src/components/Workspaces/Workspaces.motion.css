@@ -1,0 +1,93 @@
+.workspace-list-motion-stack {
+  position: relative;
+  min-width: 0;
+}
+
+.workspace-list-motion-layer {
+  min-width: 0;
+}
+
+.workspace-card {
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.workspace-card:has(.launch-btn.launching) {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent, var(--gold)) 24%, transparent),
+    var(--shadow-card);
+}
+
+.graph-workspace-node {
+  transform-origin: center;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.graph-workspace-step-node.is-launch-current {
+  border-color: var(--workspace-step-color, var(--accent)) !important;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--workspace-step-color, var(--accent)) 22%, transparent),
+    0 0 14px color-mix(in srgb, var(--workspace-step-color, var(--accent)) 28%, transparent) !important;
+}
+
+.graph-workspace-step-node.is-launch-current::before {
+  position: absolute;
+  inset: -5px;
+  border: 1px solid color-mix(in srgb, var(--workspace-step-color, var(--accent)) 58%, transparent);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+  animation: workspace-node-status-ring var(--motion-emphasis) var(--ease-enter) both;
+}
+
+.graph-workspace-step-node.is-launch-complete::after {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid color-mix(in srgb, #37d6bf 72%, white);
+  border-radius: 50%;
+  background: #37d6bf;
+  box-shadow: 0 0 8px color-mix(in srgb, #37d6bf 42%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+@keyframes workspace-node-status-ring {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes workspace-motion-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+:root:is([data-motion="full"], [data-motion="standard"]) .workspace-launch-spinner {
+  animation: workspace-motion-spin var(--motion-spinner-fast) linear infinite;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .workspace-launch-spinner {
+  animation: none;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .workspace-panel .spin-animation {
+  animation: none;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .graph-workspace-step-node.is-launch-current::before {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-launch-spinner {
+    animation: none !important;
+  }
+}

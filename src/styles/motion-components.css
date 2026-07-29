@@ -1,0 +1,109 @@
+:is(button, [role="button"], [data-motion-pressable]):not([aria-roledescription="sortable"]):not([data-motion-transform="dnd"]) {
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-instant) var(--ease-standard);
+}
+
+:is(button, [role="button"], [data-motion-pressable]):not([aria-roledescription="sortable"]):not([data-motion-transform="dnd"]):not(:disabled):not([aria-disabled="true"]):active {
+  transform: scale(var(--motion-press-scale));
+}
+
+:root:is([data-motion="full"], [data-motion="standard"]) :is(
+  .primary-action,
+  .secondary-action,
+  .wide-command,
+  .danger-action,
+  .switch-button,
+  .group-tabs button
+):not([data-motion-transform="dnd"]):not(:disabled):not([aria-disabled="true"]):active {
+  transform: scale(var(--motion-press-scale)) !important;
+}
+
+#root [data-motion-transform="dnd"],
+[data-dnd-overlay="true"][data-motion-transform="dnd"] {
+  transform: var(--dnd-transform, none) !important;
+}
+
+#root [data-motion-transform="dnd"][data-dnd-active="true"],
+[data-dnd-overlay="true"][data-motion-transform="dnd"] {
+  transition: var(--dnd-transition, none) !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"], [data-window-state="hidden"]) #root [data-motion-transform="dnd"][data-dnd-active="true"] {
+  transition: none !important;
+}
+
+[data-batch-mode="true"] .resource-row {
+  transition: none !important;
+}
+
+[data-batch-mode="true"] .resource-row.selected {
+  box-shadow: none !important;
+}
+
+[data-batch-mode="true"] .resource-row::before,
+[data-batch-mode="true"] .resource-row::after {
+  opacity: 0 !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+:is(
+  [data-motion-icon-button],
+  .icon-action,
+  .rail-button,
+  .favorite-action,
+  .palette-clear-btn,
+  .window-controls button
+):not([aria-roledescription="sortable"]):not([data-motion-transform="dnd"]) {
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard),
+  transform var(--motion-instant) var(--ease-standard);
+}
+
+:is(button, [role="button"], [data-motion-pressable]):is(:disabled, [aria-disabled="true"]) {
+  transform: none !important;
+  transition: none !important;
+}
+
+[data-motion-dialog],
+[data-motion-dialog-panel] {
+  animation: none;
+}
+
+[data-motion-tooltip] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(var(--motion-distance-xs));
+  transition:
+    opacity var(--motion-tooltip-exit) var(--ease-exit),
+    transform var(--motion-tooltip-exit) var(--ease-exit);
+}
+
+[data-motion-tooltip][data-state="open"] {
+  opacity: 1;
+  transform: translateY(0);
+  transition-duration: var(--motion-tooltip-enter);
+  transition-timing-function: var(--ease-enter);
+}
+
+:root[data-motion="minimal"] [data-motion-tooltip],
+:root[data-motion="off"] [data-motion-tooltip] {
+  transform: none;
+}
+
+[data-motion-status] {
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}

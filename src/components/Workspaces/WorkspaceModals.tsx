@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AlertCircle, CheckCircle2, Edit3, HelpCircle, Search, X } from "lucide-react";
+import { MotionDialog } from "../../motion";
 import type { OrbitItem } from "../../types";
 import type {
   ThemedAlert,
@@ -28,8 +29,7 @@ export function ResourceSelectorModal({
   onUpdateStep,
   getStepIcon
 }: ResourceSelectorModalProps) {
-  if (!selectorStepId) return null;
-
+  const activeSelectorStepId = selectorStepId ?? "";
   const searchLower = selectorSearch.toLowerCase().trim();
   const filteredItems = items.filter((item) => !searchLower || (
     item.title.toLowerCase().includes(searchLower) ||
@@ -37,8 +37,13 @@ export function ResourceSelectorModal({
   ));
 
   return (
-    <div className="resource-selector-overlay" onClick={onClose}>
-      <div className="resource-selector-modal glass-panel" onClick={(event) => event.stopPropagation()}>
+    <MotionDialog
+      open={Boolean(selectorStepId)}
+      backdropClassName="resource-selector-overlay"
+      className="resource-selector-modal glass-panel"
+      onBackdropClick={onClose}
+      ariaLabel="选择工作区资源"
+    >
         <div className="selector-header">
           <Search size={18} className="text-muted" />
           <input
@@ -56,7 +61,7 @@ export function ResourceSelectorModal({
           <div
             className="selector-result-item custom-option"
             onClick={() => {
-              onUpdateStep(selectorStepId, { itemId: undefined, title: "自定义步骤", target: "", type: "file" });
+              onUpdateStep(activeSelectorStepId, { itemId: undefined, title: "自定义步骤", target: "", type: "file" });
               onClose();
             }}
           >
@@ -71,7 +76,7 @@ export function ResourceSelectorModal({
               key={item.id}
               className="selector-result-item"
               onClick={() => {
-                onUpdateStep(selectorStepId, { itemId: item.id });
+                onUpdateStep(activeSelectorStepId, { itemId: item.id });
                 onClose();
               }}
             >
@@ -84,8 +89,7 @@ export function ResourceSelectorModal({
           ))}
           {filteredItems.length === 0 && <div className="selector-no-results">未找到匹配的资源</div>}
         </div>
-      </div>
-    </div>
+    </MotionDialog>
   );
 }
 
@@ -97,11 +101,16 @@ interface DeleteWorkspaceDialogProps {
 }
 
 export function DeleteWorkspaceDialog({ workspace, onClose, onConfirm, getWorkspaceIcon }: DeleteWorkspaceDialogProps) {
-  if (!workspace) return null;
-
   return (
-    <div className="resource-selector-overlay" onClick={onClose}>
-      <div className="modal-panel dialog-panel" onClick={(event) => event.stopPropagation()}>
+    <MotionDialog
+      open={Boolean(workspace)}
+      backdropClassName="resource-selector-overlay"
+      className="modal-panel dialog-panel"
+      onBackdropClick={onClose}
+      ariaLabel="删除工作区"
+    >
+      {workspace && (
+        <>
         <div className="modal-head">
           <div>
             <p className="eyebrow">Delete workspace</p>
@@ -129,8 +138,9 @@ export function DeleteWorkspaceDialog({ workspace, onClose, onConfirm, getWorksp
             删除
           </button>
         </div>
-      </div>
-    </div>
+        </>
+      )}
+    </MotionDialog>
   );
 }
 
@@ -142,11 +152,15 @@ interface LaunchLogsDialogProps {
 }
 
 export function LaunchLogsDialog({ isOpen, launchLogs, onClose, onClear }: LaunchLogsDialogProps) {
-  if (!isOpen) return null;
-
   return (
-    <div className="resource-selector-overlay" onClick={onClose}>
-      <div className="modal-panel dialog-panel" style={{ maxWidth: "550px", width: "90%" }} onClick={(event) => event.stopPropagation()}>
+    <MotionDialog
+      open={isOpen}
+      backdropClassName="resource-selector-overlay"
+      className="modal-panel dialog-panel"
+      panelStyle={{ maxWidth: "550px", width: "90%" }}
+      onBackdropClick={onClose}
+      ariaLabel="启动历史日志"
+    >
         <div className="modal-head">
           <div>
             <p className="eyebrow">Launch logs</p>
@@ -200,8 +214,7 @@ export function LaunchLogsDialog({ isOpen, launchLogs, onClose, onClear }: Launc
           </button>
           <button type="button" className="primary-action" onClick={onClose}>关闭</button>
         </div>
-      </div>
-    </div>
+    </MotionDialog>
   );
 }
 
@@ -228,11 +241,15 @@ export function WindowLayoutImportDialog({
   onWindowBindingsChange,
   onImport
 }: WindowLayoutImportDialogProps) {
-  if (!isOpen) return null;
-
   return (
-    <div className="resource-selector-overlay" onClick={onClose}>
-      <div className="modal-panel dialog-panel" style={{ maxWidth: "720px", width: "95%", maxHeight: "85vh" }} onClick={(event) => event.stopPropagation()}>
+    <MotionDialog
+      open={isOpen}
+      backdropClassName="resource-selector-overlay"
+      className="modal-panel dialog-panel"
+      panelStyle={{ maxWidth: "720px", width: "95%", maxHeight: "85vh" }}
+      onBackdropClick={onClose}
+      ariaLabel="导入或关联桌面窗口"
+    >
         <div className="modal-head">
           <div>
             <p className="eyebrow">Import Desktop Windows</p>
@@ -253,7 +270,7 @@ export function WindowLayoutImportDialog({
               const isSelected = selectedWindowIndices.includes(index);
               const currentBinding = windowBindings[index] || "new";
               return (
-                <div key={index} style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", background: "var(--surface-3)", padding: "10px 12px", borderRadius: "var(--radius-sm)", border: isSelected ? "1px solid var(--gold)" : "1px solid var(--line)", transition: "all 0.2s" }}>
+                <div key={index} style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", background: "var(--surface-3)", padding: "10px 12px", borderRadius: "var(--radius-sm)", border: isSelected ? "1px solid var(--gold)" : "1px solid var(--line)", transition: "border-color var(--motion-fast) var(--ease-standard)" }}>
                   <input
                     type="checkbox"
                     checked={isSelected}
@@ -306,8 +323,7 @@ export function WindowLayoutImportDialog({
             确认导入并更新 ({selectedWindowIndices.length})
           </button>
         </div>
-      </div>
-    </div>
+    </MotionDialog>
   );
 }
 
@@ -317,11 +333,18 @@ interface ThemedAlertDialogProps {
 }
 
 export function ThemedAlertDialog({ alert, onClose }: ThemedAlertDialogProps) {
-  if (!alert) return null;
-
   return (
-    <div className="resource-selector-overlay" style={{ zIndex: 100000 }} onClick={onClose}>
-      <div className="modal-panel dialog-panel" style={{ maxWidth: "400px", width: "90%", padding: "var(--space-5)" }} onClick={(event) => event.stopPropagation()}>
+    <MotionDialog
+      open={Boolean(alert)}
+      backdropClassName="resource-selector-overlay"
+      className="modal-panel dialog-panel"
+      backdropStyle={{ zIndex: 100000 }}
+      panelStyle={{ maxWidth: "400px", width: "90%", padding: "var(--space-5)" }}
+      onBackdropClick={onClose}
+      ariaLabel={alert?.title ?? "提示"}
+    >
+      {alert && (
+        <>
         <div className="modal-head" style={{ marginBottom: "var(--space-3)", borderBottom: "none", paddingBottom: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
             {alert.type === "success" && <CheckCircle2 size={24} style={{ color: "var(--gold)" }} />}
@@ -340,7 +363,8 @@ export function ThemedAlertDialog({ alert, onClose }: ThemedAlertDialogProps) {
             确定
           </button>
         </div>
-      </div>
-    </div>
+        </>
+      )}
+    </MotionDialog>
   );
 }

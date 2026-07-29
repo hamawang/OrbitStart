@@ -1,10 +1,12 @@
 import { Eye, EyeOff, Pin, Save, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { renderMarkdown } from "../lib/markdown";
 import { tripCategoryLabels, tripTemplates } from "../lib/tripTemplates";
+import { MotionDialog, MotionTooltip } from "../motion";
 import type { OrbitItem, Trip, TripCategory, TripStatus, TripUpdateInput } from "../types";
 
 interface TripEditorProps {
+  open: boolean;
   item: OrbitItem;
   trip?: Trip | null;
   onSave: (input: TripUpdateInput) => void | Promise<void>;
@@ -18,7 +20,7 @@ const statusLabels: Record<TripStatus, string> = {
   "needs-update": "需更新"
 };
 
-export function TripEditor({ item, trip, onSave, onCancel }: TripEditorProps) {
+export function TripEditor({ open, item, trip, onSave, onCancel }: TripEditorProps) {
   const [title, setTitle] = useState(trip?.title ?? "");
   const [content, setContent] = useState(trip?.content ?? "");
   const [category, setCategory] = useState<TripCategory>(trip?.category ?? "note");
@@ -26,6 +28,17 @@ export function TripEditor({ item, trip, onSave, onCancel }: TripEditorProps) {
   const [tags, setTags] = useState((trip?.tags ?? []).join(", "));
   const [pinned, setPinned] = useState(Boolean(trip?.pinned));
   const [preview, setPreview] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setTitle(trip?.title ?? "");
+    setContent(trip?.content ?? "");
+    setCategory(trip?.category ?? "note");
+    setStatus((trip?.status as TripStatus | null) ?? "todo");
+    setTags((trip?.tags ?? []).join(", "));
+    setPinned(Boolean(trip?.pinned));
+    setPreview(false);
+  }, [open, trip?.id]);
 
   const applyTemplate = (templateId: string) => {
     const template = tripTemplates.find((candidate) => candidate.id === templateId);
@@ -49,16 +62,23 @@ export function TripEditor({ item, trip, onSave, onCancel }: TripEditorProps) {
   };
 
   return (
-    <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-      <div className="trip-editor">
+    <MotionDialog
+      open={open}
+      backdropClassName="palette-backdrop centered-backdrop"
+      className="trip-editor"
+      onBackdropClick={onCancel}
+      ariaLabel={trip ? "编辑 Tip" : "新建 Tip"}
+    >
         <header className="trip-editor-head">
           <div>
             <p className="eyebrow">{trip ? "Edit Tip" : "New Tip"}</p>
             <h3>{item.title}</h3>
           </div>
-          <button type="button" className="icon-action" title="关闭" onClick={onCancel}>
-            <X size={18} />
-          </button>
+          <MotionTooltip label="关闭" placement="top">
+            <button type="button" className="icon-action" aria-label="关闭" onClick={onCancel}>
+              <X size={18} />
+            </button>
+          </MotionTooltip>
         </header>
 
         {!trip && (
@@ -128,7 +148,6 @@ export function TripEditor({ item, trip, onSave, onCancel }: TripEditorProps) {
             保存
           </button>
         </footer>
-      </div>
-    </section>
+    </MotionDialog>
   );
 }

@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { AnimatePresence, m, useIsPresent, type Transition } from "motion/react";
 import {
   AlertCircle,
   AppWindow,
@@ -18,6 +19,22 @@ import {
   X
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  MotionTooltipButton,
+  motionVariants,
+  useMotionPolicy,
+  useMotionTransition
+} from "../../motion";
+import {
+  parseStoredWorkspaceLaunch,
+  STORAGE_KEY_ACTIVE_LAUNCH,
+  type WorkspaceLaunchProgress
+} from "./workspaceLaunch";
+import {
+  emitPluginStorageChanged,
+  PLUGIN_STORAGE_CHANGED_EVENT,
+  type PluginStorageChangedDetail
+} from "../../plugin/storageEvents";
 import { WorkspaceContextMenus } from "./WorkspaceContextMenus";
 import { WorkspaceListView } from "./WorkspaceListView";
 import {
@@ -44,12 +61,81 @@ import {
 } from "./types";
 import { getWorkspaceGraphLayout } from "./workspaceGraph";
 import { getStepIcon, getWorkspaceIcon } from "./workspaceIcons";
+import "./Workspaces.motion.css";
+
+type WorkspaceLaunchState = "idle" | "running" | "success" | "error" | "cancelled";
 
 function sanitizeCommandId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_\-\.]/g, "_");
 }
 
+function WorkspaceGraphDetailsDrawer({
+  children,
+  transformsEnabled,
+  transition,
+  exitTransition
+}: {
+  children: React.ReactNode;
+  transformsEnabled: boolean;
+  transition: Transition;
+  exitTransition: Transition;
+}) {
+  const isPresent = useIsPresent();
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const drawer = drawerRef.current;
+    if (!drawer) return;
+    if (isPresent) drawer.removeAttribute("inert");
+    else drawer.setAttribute("inert", "");
+  }, [isPresent]);
+
+  return (
+    <m.div
+      ref={drawerRef}
+      className="graph-node-details-drawer glass-panel"
+      variants={transformsEnabled ? motionVariants.drawer : motionVariants.fade}
+      initial="hidden"
+      animate="visible"
+      exit={
+        transformsEnabled
+          ? { opacity: 0, x: 8, transition: exitTransition }
+          : { opacity: 0, transition: exitTransition }
+      }
+      transition={transition}
+      data-presence={isPresent ? "present" : "exiting"}
+      aria-hidden={!isPresent}
+      style={{
+        position: "absolute",
+        right: "12px",
+        top: "12px",
+        bottom: "12px",
+        width: "320px",
+        background: "var(--surface)",
+        border: "1px solid var(--line-strong)",
+        borderRadius: "8px",
+        padding: "16px",
+        zIndex: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: "12px",
+        boxShadow: "-4px 0 16px rgba(0,0,0,0.12)",
+        pointerEvents: isPresent ? "auto" : "none"
+      }}
+    >
+      {children}
+    </m.div>
+  );
+}
+
 export function Workspaces({ pluginHost, items }: WorkspacesProps) {
+  const motionPolicy = useMotionPolicy();
+  const fastTransition = useMotionTransition("fast");
+  const baseTransition = useMotionTransition("base");
+  const panelTransition = useMotionTransition("panel");
+  const exitTransition = useMotionTransition("exit");
+  const drawerTransition = useMotionTransition("dialog");
+  const drawerExitTransition = useMotionTransition("drawerExit");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [steps, setSteps] = useState<WorkspaceStep[]>([]);
   const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
@@ -81,6 +167,64 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   const [isGraphLocked, setIsGraphLocked] = useState<boolean>(false);
   const [isGraphFullscreen, setIsGraphFullscreen] = useState<boolean>(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [launchState, setLaunchState] = useState<WorkspaceLaunchState>("idle");
+  const [launchFeedbackWorkspace, setLaunchFeedbackWorkspace] = useState<Workspace | null>(null);
+  const [launchProgress, setLaunchProgress] = useState<WorkspaceLaunchProgress | null>(null);
+  const launchFeedbackTimerRef = useRef<number | null>(null);
+  const launchInFlightRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (launchFeedbackTimerRef.current !== null) {
+        window.clearTimeout(launchFeedbackTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!launchingId) return;
+
+    const readLaunchProgress = () => {
+      try {
+        const progress = parseStoredWorkspaceLaunch(
+          localStorage.getItem(STORAGE_KEY_ACTIVE_LAUNCH),
+          launchingId,
+          launchFeedbackWorkspace?.name || ""
+        );
+        if (progress) setLaunchProgress(progress);
+      } catch {
+        // The launcher owns this transient record. A partially written value is
+        // ignored and will be retried while the launch is active.
+      }
+    };
+
+    readLaunchProgress();
+
+    const handlePluginStorageChanged = (event: Event) => {
+      const detail = (event as CustomEvent<PluginStorageChangedDetail>).detail;
+      if (detail?.storageKey === STORAGE_KEY_ACTIVE_LAUNCH) {
+        readLaunchProgress();
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY_ACTIVE_LAUNCH) {
+        readLaunchProgress();
+      }
+    };
+
+    window.addEventListener(
+      PLUGIN_STORAGE_CHANGED_EVENT,
+      handlePluginStorageChanged
+    );
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(
+        PLUGIN_STORAGE_CHANGED_EVENT,
+        handlePluginStorageChanged
+      );
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [launchFeedbackWorkspace?.name, launchingId]);
 
   useEffect(() => {
     const handleGlobalClick = () => {
@@ -737,11 +881,78 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   };
 
   const handleLaunch = async (workspace: Workspace) => {
+    if (launchInFlightRef.current) {
+      if (launchInFlightRef.current !== workspace.id) {
+        setThemedAlert({
+          title: "工作区正在启动",
+          message: "请等待当前工作区启动完成后再启动另一个工作区。",
+          type: "info"
+        });
+      }
+      return;
+    }
+    launchInFlightRef.current = workspace.id;
+    if (launchFeedbackTimerRef.current !== null) {
+      window.clearTimeout(launchFeedbackTimerRef.current);
+      launchFeedbackTimerRef.current = null;
+    }
+    const launchStartedAt = Date.now();
+    setLaunchFeedbackWorkspace(workspace);
+    setLaunchState("running");
+    setLaunchProgress({
+      launchId: `ui-pending-${workspace.id}-${launchStartedAt}`,
+      ownerRuntimeId: "ui-pending",
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      currentStepIndex: 0,
+      totalSteps: steps.filter((step) => step.workspaceId === workspace.id && step.enabled).length,
+      currentStepId: null,
+      currentStepTitle: "",
+      completedStepIds: [],
+      failedStepCount: 0,
+      status: "running",
+      result: null,
+      startedAt: launchStartedAt,
+      updatedAt: launchStartedAt,
+      completedAt: null,
+      errorMessage: null
+    });
     setLaunchingId(workspace.id);
+    let finalLaunchState: Extract<WorkspaceLaunchState, "success" | "error" | "cancelled"> = "error";
     try {
       const commandId = `workspaces.run-workspace-${sanitizeCommandId(workspace.id)}`;
       if (pluginHost && pluginHost.commands && typeof pluginHost.commands.run === "function") {
         await pluginHost.commands.run(commandId);
+        let completedWithErrors = false;
+        let storedResult: "success" | "error" | "cancelled" | null = null;
+        try {
+          storedResult = parseStoredWorkspaceLaunch(
+            localStorage.getItem(STORAGE_KEY_ACTIVE_LAUNCH),
+            workspace.id,
+            workspace.name
+          )?.result ?? null;
+        } catch {
+          // The launch log remains the compatibility fallback.
+        }
+        try {
+          const rawLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+          const latestLog = rawLogs
+            ? (JSON.parse(rawLogs) as Array<WorkspaceLaunchLog & { workspaceId?: string }>).find(
+                (log) => log.workspaceId === workspace.id || log.workspaceName === workspace.name
+              )
+            : undefined;
+          completedWithErrors = Boolean(latestLog && latestLog.status !== "success");
+        } catch {
+          // The command result remains authoritative when optional log parsing
+          // is unavailable.
+        }
+        finalLaunchState =
+          storedResult === "cancelled"
+            ? "cancelled"
+            : storedResult === "error" || completedWithErrors
+              ? "error"
+              : "success";
+        setLaunchState(finalLaunchState);
         // Refresh local view count and launched stats
         setTimeout(() => {
           const rawWs = localStorage.getItem(STORAGE_KEY_WORKSPACES);
@@ -752,6 +963,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
           }
         }, 1500);
       } else {
+        setLaunchState("error");
         setThemedAlert({
           title: "错误",
           message: "插件系统不可用，无法启动工作区",
@@ -760,18 +972,84 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       }
     } catch (e) {
       console.error("Workspace launch failed", e);
+      try {
+        const storedLaunch = parseStoredWorkspaceLaunch(
+          localStorage.getItem(STORAGE_KEY_ACTIVE_LAUNCH),
+          workspace.id,
+          workspace.name
+        );
+        if (storedLaunch?.status === "running") {
+          const completedAt = Date.now();
+          const interruptedLaunch: WorkspaceLaunchProgress = {
+            ...storedLaunch,
+            currentStepId: null,
+            currentStepTitle: "工作区运行器已中断",
+            status: "done",
+            result: "error",
+            updatedAt: completedAt,
+            completedAt,
+            errorMessage: String(e)
+          };
+          localStorage.setItem(
+            STORAGE_KEY_ACTIVE_LAUNCH,
+            JSON.stringify(interruptedLaunch)
+          );
+          emitPluginStorageChanged({
+            pluginId: "workspaces",
+            namespace: "storage",
+            key: "active_launch",
+            storageKey: STORAGE_KEY_ACTIVE_LAUNCH,
+            value: interruptedLaunch,
+            removed: false
+          });
+          setLaunchProgress(interruptedLaunch);
+        }
+      } catch {
+        // The alert below remains available even if recovery persistence fails.
+      }
+      setLaunchState("error");
       setThemedAlert({
         title: "启动失败",
         message: `启动失败，错误信息：${String(e)}`,
         type: "error"
       });
     } finally {
-      setLaunchingId(null);
+      try {
+        const finalProgress = parseStoredWorkspaceLaunch(
+          localStorage.getItem(STORAGE_KEY_ACTIVE_LAUNCH),
+          workspace.id,
+          workspace.name
+        );
+        if (finalProgress) setLaunchProgress(finalProgress);
+      } catch {
+        // Preserve the last successfully sampled progress if the transient
+        // plugin record cannot be parsed at completion.
+      }
+      if (launchInFlightRef.current === workspace.id) {
+        launchInFlightRef.current = null;
+        setLaunchingId(null);
+      }
+      setLaunchState(finalLaunchState);
+      if (finalLaunchState === "success") {
+        setLaunchProgress((current) => current ? {
+          ...current,
+          currentStepIndex: current.totalSteps
+        } : current);
+      }
+      launchFeedbackTimerRef.current = window.setTimeout(() => {
+        setLaunchState("idle");
+        setLaunchFeedbackWorkspace(null);
+        setLaunchProgress(null);
+        launchFeedbackTimerRef.current = null;
+      }, 1400);
     }
   };
 
   return (
-    <div className="tab-pane-content workspace-panel">
+    <div
+      className="tab-pane-content workspace-panel"
+      data-workspace-launch-state={launchState}
+    >
       {editingWorkspace ? (
         // EDIT MODE UI
         <div className="workspace-editor glass-panel">
@@ -918,7 +1196,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                         fontSize: "0.72rem",
                         cursor: "pointer",
                         fontWeight: editorViewMode === "graph" ? "bold" : "normal",
-                        transition: "all 0.15s ease"
+                        transition: "background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard)"
                       }}
                     >
                       图形模式
@@ -935,7 +1213,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                         fontSize: "0.72rem",
                         cursor: "pointer",
                         fontWeight: editorViewMode === "card" ? "bold" : "normal",
-                        transition: "all 0.15s ease"
+                        transition: "background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard)"
                       }}
                     >
                       卡片模式
@@ -952,7 +1230,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                         fontSize: "0.72rem",
                         cursor: "pointer",
                         fontWeight: editorViewMode === "list" ? "bold" : "normal",
-                        transition: "all 0.15s ease"
+                        transition: "background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard)"
                       }}
                     >
                       列表模式
@@ -961,9 +1239,9 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                 </div>
                 <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
                   {editingSteps.length > 0 && (
-                    <button type="button" className="secondary-action compact-action" onClick={handleCaptureWindowLayout} title="捕获当前屏幕上所有打开软件的窗口大小与坐标并自动匹配绑定到对应步骤">
+                    <MotionTooltipButton type="button" className="secondary-action compact-action" onClick={handleCaptureWindowLayout} tooltip="捕获当前屏幕上所有打开软件的窗口大小与坐标，并自动匹配到对应步骤">
                       <AppWindow size={16} /> 自动关联当前窗口位置
-                    </button>
+                    </MotionTooltipButton>
                   )}
                   <button className="primary-action compact-action" onClick={() => handleAddStep()}>
                     <Plus size={16} /> 添加步骤
@@ -980,10 +1258,24 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                 <>
                   {editorViewMode === "card" && (
                     <div className="steps-list">
+                  <AnimatePresence initial={false}>
                   {editingSteps.map((step, index) => {
                     const isExpanded = expandedStepIds.includes(step.id);
                     return (
-                      <div key={step.id} className="step-item glass-card" style={{ padding: isExpanded ? "var(--space-4)" : "10px 16px" }}>
+                      <m.div
+                        key={step.id}
+                        className="step-item glass-card"
+                        variants={
+                          motionPolicy.transformsEnabled
+                            ? motionVariants.fadeSlide
+                            : motionVariants.fade
+                        }
+                        initial="hidden"
+                        animate="visible"
+                        exit="exit"
+                        transition={baseTransition}
+                        style={{ padding: isExpanded ? "var(--space-4)" : "10px 16px" }}
+                      >
                         <div className="step-drag-handle" style={{ alignSelf: isExpanded ? "flex-start" : "center", marginTop: isExpanded ? "10px" : "0" }}>
                           <button 
                             className="sort-btn" 
@@ -1046,22 +1338,22 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
 
                             {/* Toggle expand / Delete */}
                             <div style={{ display: "flex", gap: "4px", alignItems: "center", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                              <button 
+                              <MotionTooltipButton
                                 type="button" 
                                 className="icon-button" 
-                                title="展开设置"
+                                tooltip="展开设置"
                                 onClick={() => setExpandedStepIds([...expandedStepIds, step.id])}
                               >
                                 <ChevronDown size={16} />
-                              </button>
-                              <button 
+                              </MotionTooltipButton>
+                              <MotionTooltipButton
                                 type="button" 
                                 className="icon-button text-danger" 
-                                title="删除此步骤"
+                                tooltip="删除此步骤"
                                 onClick={() => handleDeleteStep(step.id)}
                               >
                                 <Trash2 size={15} />
-                              </button>
+                              </MotionTooltipButton>
                             </div>
                           </div>
                         ) : (
@@ -1072,22 +1364,22 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 <strong style={{ fontSize: "0.9rem" }}>配置步骤 #{index + 1}: {step.title}</strong>
                               </div>
                               <div style={{ display: "flex", gap: "4px" }}>
-                                <button 
+                                <MotionTooltipButton
                                   type="button" 
                                   className="icon-button"
-                                  title="收起步骤"
+                                  tooltip="收起步骤"
                                   onClick={() => setExpandedStepIds(expandedStepIds.filter(id => id !== step.id))}
                                 >
                                   <ChevronUp size={16} />
-                                </button>
-                                <button 
+                                </MotionTooltipButton>
+                                <MotionTooltipButton
                                   type="button" 
                                   className="icon-button text-danger" 
-                                  title="删除"
+                                  tooltip="删除"
                                   onClick={() => handleDeleteStep(step.id)}
                                 >
                                   <Trash2 size={15} />
-                                </button>
+                                </MotionTooltipButton>
                               </div>
                             </div>
 
@@ -1240,10 +1532,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                     placeholder="C:\path\to\script.ps1 或 .bat"
                                     style={{ flexGrow: 1 }}
                                   />
-                                  <button
+                                  <MotionTooltipButton
                                     type="button"
                                     className="compact-action"
-                                    title="选择脚本文件"
+                                    tooltip="选择脚本文件"
                                     style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer" }}
                                     onClick={async () => {
                                       const filter = step.scriptConfig?.type === "ps1"
@@ -1258,7 +1550,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                     }}
                                   >
                                     <FileText size={15} />
-                                  </button>
+                                  </MotionTooltipButton>
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--gold)", fontSize: "0.72rem", marginTop: "4px", background: "rgba(197, 160, 89, 0.05)", padding: "4px 8px", borderRadius: "4px", border: "1px solid rgba(197, 160, 89, 0.15)" }}>
                                   <AlertCircle size={12} />
@@ -1326,10 +1618,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   />
                                   {step.waitCondition?.type === "path" && (
                                     <>
-                                      <button
+                                      <MotionTooltipButton
                                         type="button"
                                         className="compact-action"
-                                        title="选择等待文件"
+                                        tooltip="选择等待文件"
                                         style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer", flexShrink: 0 }}
                                         onClick={async () => {
                                           const picked = await handlePickFile();
@@ -1341,11 +1633,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         }}
                                       >
                                         <FileText size={15} />
-                                      </button>
-                                      <button
+                                      </MotionTooltipButton>
+                                      <MotionTooltipButton
                                         type="button"
                                         className="compact-action"
-                                        title="选择等待文件夹"
+                                        tooltip="选择等待文件夹"
                                         style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer", flexShrink: 0 }}
                                         onClick={async () => {
                                           const picked = await handlePickFolder();
@@ -1357,7 +1649,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         }}
                                       >
                                         <FolderOpen size={15} />
-                                      </button>
+                                      </MotionTooltipButton>
                                     </>
                                   )}
                                 </div>
@@ -1403,10 +1695,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   placeholder="C:\path\to\app.exe 或 https://..."
                                   style={{ flexGrow: 1 }}
                                 />
-                                <button
+                                <MotionTooltipButton
                                   type="button"
                                   className="compact-action"
-                                  title="选择文件"
+                                  tooltip="选择文件"
                                   style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer" }}
                                   onClick={async () => {
                                     const picked = await handlePickFile();
@@ -1414,11 +1706,11 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   }}
                                 >
                                   <FileText size={15} />
-                                </button>
-                                <button
+                                </MotionTooltipButton>
+                                <MotionTooltipButton
                                   type="button"
                                   className="compact-action"
-                                  title="选择文件夹"
+                                  tooltip="选择文件夹"
                                   style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer" }}
                                   onClick={async () => {
                                     const picked = await handlePickFolder();
@@ -1426,7 +1718,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   }}
                                 >
                                   <FolderOpen size={15} />
-                                </button>
+                                </MotionTooltipButton>
                               </div>
                             </div>
                           </>
@@ -1517,10 +1809,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   placeholder="工作目录路径 (可选)"
                                   style={{ flexGrow: 1 }}
                                 />
-                                <button
+                                <MotionTooltipButton
                                   type="button"
                                   className="compact-action"
-                                  title="选择工作目录"
+                                  tooltip="选择工作目录"
                                   style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "32px", cursor: "pointer" }}
                                   onClick={async () => {
                                     const picked = await handlePickFolder();
@@ -1528,7 +1820,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   }}
                                 >
                                   <FolderOpen size={15} />
-                                </button>
+                                </MotionTooltipButton>
                               </div>
                             </div>
                             <div className="step-input step-policy">
@@ -1617,9 +1909,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                         )}
                           </div>
                         )}
-                      </div>
+                      </m.div>
                     );
                   })}
+                  </AnimatePresence>
                     </div>
                   )}
 
@@ -1638,8 +1931,16 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                           </tr>
                         </thead>
                         <tbody>
+                          <AnimatePresence initial={false}>
                           {editingSteps.map((step, index) => (
-                            <tr key={step.id} style={{ borderBottom: "1px solid var(--line)", color: "var(--text)" }}>
+                            <m.tr
+                              key={step.id}
+                              initial={motionPolicy.animationsEnabled ? { opacity: 0 } : false}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              transition={fastTransition}
+                              style={{ borderBottom: "1px solid var(--line)", color: "var(--text)" }}
+                            >
                               <td style={{ padding: "10px 12px", color: "var(--text-muted)" }}>{index + 1}</td>
                               <td style={{ padding: "10px 12px", fontWeight: "bold" }}>{step.title}</td>
                               <td style={{ padding: "10px 12px" }}>
@@ -1666,29 +1967,30 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               </td>
                               <td style={{ padding: "10px 12px", textAlign: "right" }}>
                                 <div style={{ display: "inline-flex", gap: "8px" }}>
-                                  <button 
+                                  <MotionTooltipButton
                                     type="button" 
                                     className="icon-button"
                                     onClick={() => {
                                       setExpandedStepIds([...expandedStepIds, step.id]);
                                       setEditorViewMode("card");
                                     }}
-                                    title="在卡片模式下展开编辑"
+                                    tooltip="在卡片模式下展开编辑"
                                   >
                                     <Edit3 size={14} />
-                                  </button>
-                                  <button 
+                                  </MotionTooltipButton>
+                                  <MotionTooltipButton
                                     type="button" 
                                     className="icon-button text-danger"
                                     onClick={() => handleDeleteStep(step.id)}
-                                    title="删除"
+                                    tooltip="删除"
                                   >
                                     <Trash2 size={14} />
-                                  </button>
+                                  </MotionTooltipButton>
                                 </div>
                               </td>
-                            </tr>
+                            </m.tr>
                           ))}
+                          </AnimatePresence>
                         </tbody>
                       </table>
                     </div>
@@ -1795,6 +2097,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                     <feComposite in="SourceGraphic" in2="blur" operator="over" />
                                   </filter>
                                 </defs>
+                                <AnimatePresence initial={false}>
                                 {edges.map(edge => {
                                   const fromY = edge.py + (edge.fromId === "ROOT" ? 33 : 31);
                                   const toY = edge.cy - 31;
@@ -1802,19 +2105,31 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                   const pathD = `M ${edge.px} ${fromY} C ${edge.px} ${midY}, ${edge.cx} ${midY}, ${edge.cx} ${toY}`;
                                   
                                   return (
-                                    <g key={edge.id}>
-                                      <path 
+                                    <m.g
+                                      key={edge.id}
+                                      initial={motionPolicy.animationsEnabled ? { opacity: 0 } : false}
+                                      animate={{ opacity: 1 }}
+                                      exit={{ opacity: 0 }}
+                                      transition={exitTransition}
+                                    >
+                                      <m.path
                                         d={pathD}
                                         fill="none"
                                         stroke={editingWorkspace?.color || "var(--accent, var(--gold))"}
                                         strokeWidth={4}
+                                        initial={motionPolicy.transformsEnabled ? { pathLength: 0 } : false}
+                                        animate={{ pathLength: 1 }}
+                                        transition={panelTransition}
                                         style={{ opacity: 0.15, filter: "url(#glow-connector)" }}
                                       />
-                                      <path 
+                                      <m.path
                                         d={pathD}
                                         fill="none"
                                         stroke={editingWorkspace?.color || "var(--accent, var(--gold))"}
                                         strokeWidth={1.5}
+                                        initial={motionPolicy.transformsEnabled ? { pathLength: 0 } : false}
+                                        animate={{ pathLength: 1 }}
+                                        transition={panelTransition}
                                         style={{ opacity: 0.8 }}
                                       />
                                       <rect 
@@ -1837,14 +2152,23 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         strokeWidth={1.2}
                                         transform={`rotate(45 ${edge.cx} ${toY})`}
                                       />
-                                    </g>
+                                    </m.g>
                                   );
                                 })}
+                                </AnimatePresence>
                               </svg>
 
+                              <AnimatePresence initial={false}>
                               {nodes.map(node => {
                                 const isRoot = node.id === "ROOT";
                                 const isSelected = node.id === selectedNodeId;
+                                const isLaunchCurrent =
+                                  launchState === "running" &&
+                                  launchProgress?.workspaceId === editingWorkspace?.id &&
+                                  launchProgress.currentStepId === node.id;
+                                const isLaunchComplete =
+                                  launchProgress?.workspaceId === editingWorkspace?.id &&
+                                  launchProgress.completedStepIds.includes(node.id);
                                 const stepColor = node.step?.color || (
                                   node.type === "app" ? "#37d6bf" :
                                   node.type === "website" ? "#5cc8ff" :
@@ -1855,10 +2179,21 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
 
                                 if (isRoot) {
                                   return (
-                                    <div 
+                                    <m.div
                                       key={node.id}
+                                      className="graph-workspace-node graph-workspace-root-node"
                                       onClick={() => setSelectedNodeId(null)}
                                       onContextMenu={(e) => handleNodeContextMenu(e, node.id)}
+                                      initial={motionPolicy.animationsEnabled ? {
+                                        opacity: 0,
+                                        scale: motionPolicy.transformsEnabled ? 0.98 : 1
+                                      } : false}
+                                      animate={{ opacity: 1, scale: 1 }}
+                                      exit={{
+                                        opacity: 0,
+                                        scale: motionPolicy.transformsEnabled ? 0.98 : 1
+                                      }}
+                                      transition={baseTransition}
                                       style={{
                                         position: "absolute",
                                         left: `${node.x - 90}px`,
@@ -1883,16 +2218,30 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                         <span style={{ fontWeight: "bold", fontSize: "0.85rem", letterSpacing: "1px" }}>启动工作区</span>
                                       </div>
                                       <span style={{ fontSize: "0.65rem", color: "var(--accent, var(--gold))", opacity: 0.8 }}>根节点</span>
-                                    </div>
+                                    </m.div>
                                   );
                                 }
 
                                 return (
-                                  <div 
+                                  <m.div
                                     key={node.id}
+                                    className={`graph-workspace-node graph-workspace-step-node ${isSelected ? "is-selected" : ""} ${isLaunchCurrent ? "is-launch-current" : ""} ${isLaunchComplete ? "is-launch-complete" : ""}`}
+                                    data-selected={isSelected ? "true" : "false"}
+                                    data-launch-step-state={isLaunchCurrent ? "current" : isLaunchComplete ? "complete" : "idle"}
                                     onClick={() => setSelectedNodeId(node.id)}
                                     onContextMenu={(e) => handleNodeContextMenu(e, node.id)}
-                                    style={{
+                                    initial={motionPolicy.animationsEnabled ? {
+                                      opacity: 0,
+                                      scale: motionPolicy.transformsEnabled ? 0.98 : 1
+                                    } : false}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{
+                                      opacity: 0,
+                                      scale: motionPolicy.transformsEnabled ? 0.98 : 1
+                                    }}
+                                      transition={baseTransition}
+                                      style={{
+                                      "--workspace-step-color": stepColor,
                                       position: "absolute",
                                       left: `${node.x - 77}px`,
                                       top: `${node.y - 31}px`,
@@ -1910,8 +2259,8 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                       gap: "8px",
                                       cursor: "pointer",
                                       zIndex: 4,
-                                      transition: "border-color 0.2s, box-shadow 0.2s"
-                                    }}
+                                      transition: "border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard)"
+                                    } as React.CSSProperties}
                                   >
                                     <div 
                                       style={{
@@ -1952,9 +2301,10 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                          node.type === "wait" ? "等待" : "未知"}
                                       </span>
                                     </div>
-                                  </div>
+                                  </m.div>
                                 );
                               })}
+                              </AnimatePresence>
                             </div>
                           </div>
 
@@ -2037,43 +2387,43 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               pointerEvents: "auto"
                             }}
                           >
-                            <button 
+                            <MotionTooltipButton
                               type="button" 
                               className="icon-button"
-                              title={isGraphLocked ? "解锁画幅编辑" : "锁定画幅编辑"}
+                              tooltip={isGraphLocked ? "解锁画幅编辑" : "锁定画幅编辑"}
                               onClick={() => setIsGraphLocked(!isGraphLocked)}
                               style={{ color: isGraphLocked ? "#ef4444" : "var(--text)" }}
                             >
                               {isGraphLocked ? <X size={14} /> : <Save size={14} />}
-                            </button>
+                            </MotionTooltipButton>
                             <div style={{ width: "1px", height: "14px", background: "var(--line)" }} />
-                            <button 
+                            <MotionTooltipButton
                               type="button" 
                               className="icon-button"
-                              title="自适应居中"
+                              tooltip="自适应居中"
                               onClick={handleZoomToFit}
                             >
                               <Workflow size={14} />
-                            </button>
-                            <button 
+                            </MotionTooltipButton>
+                            <MotionTooltipButton
                               type="button" 
                               className="icon-button"
-                              title="缩小"
+                              tooltip="缩小"
                               onClick={() => setGraphZoomLevel(Math.max(0.3, graphZoomLevel - 0.1))}
                             >
                               <ArrowDown size={14} />
-                            </button>
+                            </MotionTooltipButton>
                             <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", minWidth: "32px", textAlign: "center" }}>
                               {Math.round(graphZoomLevel * 100)}%
                             </span>
-                            <button 
+                            <MotionTooltipButton
                               type="button" 
                               className="icon-button"
-                              title="放大"
+                              tooltip="放大"
                               onClick={() => setGraphZoomLevel(Math.min(2.0, graphZoomLevel + 0.1))}
                             >
                               <ArrowUp size={14} />
-                            </button>
+                            </MotionTooltipButton>
                           </div>
 
                           <button 
@@ -2096,33 +2446,20 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
-                              transition: "all 0.15s ease",
+                              transition: "background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard)",
                               pointerEvents: "auto"
                             }}
                           >
                             {isGraphFullscreen ? "退出全屏" : "全屏"}
                           </button>
 
+                          <AnimatePresence initial={false}>
                           {selectedNode && selectedStep && (
-                            <div 
-                              className="graph-node-details-drawer glass-panel"
-                              style={{
-                                position: "absolute",
-                                right: "12px",
-                                top: "12px",
-                                bottom: "12px",
-                                width: "320px",
-                                background: "var(--surface)",
-                                border: "1px solid var(--line-strong)",
-                                borderRadius: "8px",
-                                padding: "16px",
-                                zIndex: 12,
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "12px",
-                                boxShadow: "-4px 0 16px rgba(0,0,0,0.12)",
-                                pointerEvents: "auto"
-                              }}
+                            <WorkspaceGraphDetailsDrawer
+                              key={selectedNode.id}
+                              transformsEnabled={motionPolicy.transformsEnabled}
+                              transition={drawerTransition}
+                              exitTransition={drawerExitTransition}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "8px" }}>
                                 <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--accent, var(--gold))" }}>步骤节点配置</span>
@@ -2547,7 +2884,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                 >
                                   卡片高级配置
                                 </button>
-                                <button 
+                                <MotionTooltipButton
                                   type="button" 
                                   className="secondary-action compact-action danger-action"
                                   onClick={() => {
@@ -2555,13 +2892,14 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                                     setSelectedNodeId(null);
                                   }}
                                   style={{ height: "28px", width: "28px", padding: 0 }}
-                                  title="删除步骤"
+                                  tooltip="删除步骤"
                                 >
                                   <Trash2 size={13} />
-                                </button>
+                                </MotionTooltipButton>
                               </div>
-                            </div>
+                            </WorkspaceGraphDetailsDrawer>
                           )}
+                          </AnimatePresence>
                         </div>
                       </div>
                     );
@@ -2581,21 +2919,27 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
           </div>
         </div>
       ) : (
-        <WorkspaceListView
-          workspaces={workspaces}
-          steps={steps}
-          launchingId={launchingId}
-          onCreateWorkspace={handleCreateWorkspace}
-          onOpenLogs={() => setShowLogsModal(true)}
-          onLaunch={handleLaunch}
-          onEdit={handleEditWorkspace}
-          onDelete={handleDeleteWorkspace}
-          onContextMenu={(event, workspace) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setWorkspaceContextMenu({ x: event.clientX, y: event.clientY, workspace });
-          }}
-        />
+        <>
+          <div className="workspace-list-motion-stack">
+            <div className="workspace-list-motion-layer">
+              <WorkspaceListView
+                workspaces={workspaces}
+                steps={steps}
+                launchingId={launchingId}
+                onCreateWorkspace={handleCreateWorkspace}
+                onOpenLogs={() => setShowLogsModal(true)}
+                onLaunch={handleLaunch}
+                onEdit={handleEditWorkspace}
+                onDelete={handleDeleteWorkspace}
+                onContextMenu={(event, workspace) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setWorkspaceContextMenu({ x: event.clientX, y: event.clientY, workspace });
+                }}
+              />
+            </div>
+          </div>
+        </>
       )}
 
       <ResourceSelectorModal

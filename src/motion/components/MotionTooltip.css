@@ -1,0 +1,45 @@
+.orbit-motion-tooltip {
+  position: fixed;
+  z-index: 20000;
+  max-width: min(240px, calc(100vw - 24px));
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--line-strong, #ffffff) 65%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-strong, #111827) 94%, transparent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  color: var(--text, #f7fbff);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.orbit-motion-tooltip[data-placement="bottom"] {
+  transform: translate(-50%, var(--motion-distance-xs));
+}
+
+.orbit-motion-tooltip[data-placement="bottom"][data-state="open"] {
+  transform: translate(-50%, 0);
+}
+
+.orbit-motion-tooltip[data-placement="top"] {
+  transform: translate(-50%, calc(-100% - var(--motion-distance-xs)));
+}
+
+.orbit-motion-tooltip[data-placement="top"][data-state="open"] {
+  transform: translate(-50%, -100%);
+}
+
+:root[data-motion="minimal"] .orbit-motion-tooltip[data-placement="bottom"],
+:root[data-motion="off"] .orbit-motion-tooltip[data-placement="bottom"] {
+  transform: translate(-50%, 0);
+}
+
+:root[data-motion="minimal"] .orbit-motion-tooltip[data-placement="top"],
+:root[data-motion="off"] .orbit-motion-tooltip[data-placement="top"] {
+  transform: translate(-50%, -100%);
+}

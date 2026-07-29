@@ -1,0 +1,141 @@
+/*
+ * Onboarding motion overrides.
+ *
+ * The legacy onboarding rules live in styles.css. Keep this file scoped to the
+ * wizard so the feature can migrate to shared motion tokens without changing
+ * unrelated screens.
+ */
+
+.onboarding-backdrop {
+  animation-duration: var(--motion-panel);
+  animation-timing-function: var(--ease-enter);
+}
+
+.onboarding-wizard {
+  transition: none;
+}
+
+.onboarding-wizard .onboarding-skip {
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
+.onboarding-wizard .onboarding-skip:active {
+  transform: scale(0.985);
+}
+
+.onboarding-wizard .onboarding-progress span {
+  transition-property: background-color;
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--ease-standard);
+  transform-origin: center;
+  will-change: transform;
+}
+
+.onboarding-wizard .onboarding-step {
+  animation: none;
+}
+
+.onboarding-wizard .template-card {
+  transition-property: background-color, border-color, box-shadow, transform;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
+.onboarding-wizard .template-card:hover {
+  border-color: var(--onboarding-template-border, rgba(39, 215, 198, 0.3));
+  transform: translateY(calc(-1 * var(--motion-distance-xs)));
+}
+
+.onboarding-wizard .template-card:active {
+  transform: scale(0.985);
+}
+
+.onboarding-wizard .template-arrow {
+  transition-property: opacity, transform;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
+.onboarding-wizard .scan-btn {
+  transition-property: background-color, border-color, color, opacity, transform;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
+.onboarding-wizard .scan-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.onboarding-wizard .check-icon-motion {
+  display: inline-flex;
+  color: #26e070;
+  flex-shrink: 0;
+  animation: onboarding-check-pop var(--motion-base) var(--ease-enter) both;
+}
+
+.onboarding-wizard .onboarding-action-swap {
+  width: 100%;
+}
+
+@keyframes onboarding-check-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+
+  70% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+:root[data-motion="minimal"] .onboarding-wizard .template-card:hover,
+:root[data-motion="minimal"] .onboarding-wizard .template-card:active,
+:root[data-motion="minimal"] .onboarding-wizard .scan-btn:active:not(:disabled),
+:root[data-motion="minimal"] .onboarding-wizard .onboarding-skip:active {
+  transform: none;
+}
+
+:root[data-motion="minimal"] .onboarding-wizard .check-icon-motion {
+  animation-name: onboarding-check-fade;
+  animation-duration: var(--motion-fast);
+}
+
+:root[data-motion="minimal"] .onboarding-backdrop {
+  animation-duration: var(--motion-fast);
+}
+
+:root[data-motion="off"] .onboarding-backdrop,
+:root[data-motion="off"] .onboarding-wizard .check-icon-motion {
+  animation: none;
+}
+
+@keyframes onboarding-check-fade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-wizard .template-card:hover,
+  .onboarding-wizard .template-card:active,
+  .onboarding-wizard .scan-btn:active:not(:disabled),
+  .onboarding-wizard .onboarding-skip:active {
+    transform: none;
+  }
+
+  .onboarding-wizard .check-icon-motion {
+    animation-name: onboarding-check-fade;
+  }
+}

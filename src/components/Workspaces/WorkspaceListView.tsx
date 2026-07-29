@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import { Briefcase, Edit3, FileText, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { MotionTooltip } from "../../motion";
 import type { Workspace, WorkspaceStep } from "./types";
 import { getWorkspaceIcon } from "./workspaceIcons";
 
@@ -105,12 +106,16 @@ export function WorkspaceListView({
                   </button>
 
                   <div className="action-buttons">
-                    <button className="icon-button" onClick={() => onEdit(workspace)} title="编辑">
-                      <Edit3 size={16} />
-                    </button>
-                    <button className="icon-button text-danger" onClick={() => onDelete(workspace.id)} title="删除">
-                      <Trash2 size={16} />
-                    </button>
+                    <MotionTooltip label="编辑" placement="top">
+                      <button className="icon-button" aria-label="编辑" onClick={() => onEdit(workspace)}>
+                        <Edit3 size={16} />
+                      </button>
+                    </MotionTooltip>
+                    <MotionTooltip label="删除" placement="top">
+                      <button className="icon-button text-danger" aria-label="删除" onClick={() => onDelete(workspace.id)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </MotionTooltip>
                   </div>
                 </div>
               </div>

@@ -33,13 +33,16 @@ function SortableSubTagPill({ option, groupId, activeSubTag, onClick, onContextM
     id: option.name,
   });
 
+  const dndTransform = transform ? CSS.Transform.toString(transform) : "none";
   const style: CSSProperties = {
-    transform: transform ? CSS.Transform.toString(transform) : undefined,
+    transform: dndTransform,
     transition,
     opacity: isDragging ? 0.6 : 1,
     position: "relative",
     display: "inline-flex",
-  };
+    "--dnd-transform": dndTransform,
+    "--dnd-transition": transition || "none",
+  } as CSSProperties;
 
   return (
     <div
@@ -48,6 +51,8 @@ function SortableSubTagPill({ option, groupId, activeSubTag, onClick, onContextM
       {...attributes}
       {...listeners}
       className={`subtag-pill-wrapper ${isDragging ? "dragging" : ""}`}
+      data-motion-transform="dnd"
+      data-dnd-active={Boolean(transform) || isDragging ? "true" : "false"}
     >
       <button
         type="button"

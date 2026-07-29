@@ -265,14 +265,12 @@ export function markShortcutScanDone(): OnboardingState {
   return state;
 }
 
-/** Mark bookmark scan as done. If both scans done, auto-complete. Returns updated state. */
+/** Mark bookmark scan as done. Completion remains an explicit user action. */
 export function markBookmarkScanDone(): OnboardingState {
   const prev = loadOnboardingState() ?? DEFAULT_ONBOARDING_STATE;
-  const bothDone = prev.shortcutScanDone && true;
   const state: OnboardingState = {
     ...prev,
-    bookmarkScanDone: true,
-    completed: bothDone || prev.completed
+    bookmarkScanDone: true
   };
   saveOnboardingState(state);
   return state;

@@ -1,12 +1,62 @@
 import type { OrbitPlugin, OrbitPluginContext } from "./orbitstart-plugin-api";
 
 let commandDisposers = [];
+let activeWorkspaceLaunch = null;
+let activeWorkspaceLaunchId = null;
+let activeWorkspaceCancellation = null;
+let workspaceClaimPending = false;
+const WORKSPACE_LAUNCH_LEASE_MS = 8000;
+const WORKSPACE_LAUNCH_LOCK_NAME = "orbitstart:workspaces:active-launch";
+const WORKSPACE_COMMAND_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const workspaceRuntimeId =
+  globalThis.crypto?.randomUUID?.() ||
+  `runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-async function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function cancellationError() {
+  const error = new Error("工作区启动已取消");
+  error.code = "ORBIT_WORKSPACE_CANCELLED";
+  return error;
 }
 
-async function waitForCondition(ctx, cond) {
+function ownershipLostError() {
+  const error = new Error("工作区启动所有权已转移");
+  error.code = "ORBIT_WORKSPACE_OWNERSHIP_LOST";
+  return error;
+}
+
+function assertNotCancelled(cancellation) {
+  if (cancellation?.ownershipLost) throw ownershipLostError();
+  if (cancellation?.requested) throw cancellationError();
+}
+
+async function requestWorkspaceLaunchLock(task) {
+  const lockManager = globalThis.navigator?.locks;
+  if (!lockManager?.request) {
+    return { acquired: true, value: await task() };
+  }
+
+  return lockManager.request(
+    WORKSPACE_LAUNCH_LOCK_NAME,
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (!lock) return { acquired: false, value: undefined };
+      return { acquired: true, value: await task() };
+    }
+  );
+}
+
+async function delay(ms, cancellation = null) {
+  const end = Date.now() + Math.max(0, ms);
+  while (Date.now() < end) {
+    assertNotCancelled(cancellation);
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(100, Math.max(0, end - Date.now())))
+    );
+  }
+  assertNotCancelled(cancellation);
+}
+
+async function waitForCondition(ctx, cond, cancellation) {
   const type = cond.type;
   const val = cond.value;
   const timeoutMs = cond.timeoutMs || 30000;
@@ -15,11 +65,12 @@ async function waitForCondition(ctx, cond) {
   ctx.ui.toast(`等待条件：${type} -> ${val} (超时：${timeoutMs / 1000}秒)...`);
 
   while (Date.now() - start < timeoutMs) {
+    assertNotCancelled(cancellation);
     let met = false;
     try {
       if (type === "time") {
         const ms = parseInt(val) || 0;
-        await delay(ms);
+        await delay(ms, cancellation);
         return true;
       } else if (type === "process") {
         met = await ctx.launcher.checkProcessRunning(val);
@@ -37,18 +88,19 @@ async function waitForCondition(ctx, cond) {
     if (met) {
       return true;
     }
-    await delay(1000);
+    await delay(1000, cancellation);
   }
 
   return false;
 }
 
-async function restoreWindowPositionBackground(ctx, title, windowLayout) {
+async function restoreWindowPositionBackground(ctx, title, windowLayout, cancellation) {
   if (!windowLayout) return;
   const start = Date.now();
   const maxWait = 10000;
   
   while (Date.now() - start < maxWait) {
+    if (cancellation?.requested) return;
     try {
       const success = await ctx.launcher.applyWindowLayout(windowLayout);
       if (success) {
@@ -58,22 +110,64 @@ async function restoreWindowPositionBackground(ctx, title, windowLayout) {
     } catch (err) {
       // Continue polling
     }
-    await delay(500);
+    await delay(500, cancellation);
   }
 }
 
-async function runWorkspace(ctx, workspaceId) {
+async function runWorkspaceInternal(ctx, workspaceId, cancellation) {
   const startTime = Date.now();
+  let heartbeatTimer = null;
+  let launchSettled = false;
   let successSteps = 0;
   let failedSteps = 0;
   const errors = [];
+  let launchSnapshot = {
+    launchId: cancellation.launchId,
+    ownerRuntimeId: workspaceRuntimeId,
+    workspaceId,
+    workspaceName: "",
+    totalSteps: 0,
+    currentStepIndex: 0,
+    currentStepId: null,
+    currentStepTitle: "初始化中...",
+    completedStepIds: [],
+    failedStepCount: 0,
+    status: "running",
+    result: null,
+    startedAt: startTime,
+    updatedAt: startTime,
+    completedAt: null,
+    errorMessage: null
+  };
+  const persistLaunch = async (patch) => {
+    const sharedLaunch = await ctx.storage.get("active_launch");
+    if (
+      sharedLaunch?.status !== "running" ||
+      sharedLaunch?.launchId !== cancellation.launchId ||
+      sharedLaunch?.ownerRuntimeId !== workspaceRuntimeId
+    ) {
+      cancellation.ownershipLost = true;
+      throw ownershipLostError();
+    }
+    launchSnapshot = { ...launchSnapshot, ...patch, updatedAt: Date.now() };
+    await ctx.storage.set("active_launch", launchSnapshot);
+  };
   
   try {
+    assertNotCancelled(cancellation);
     const workspaces = (await ctx.storage.get("workspaces")) || [];
     const workspace = workspaces.find((ws) => ws.id === workspaceId);
     if (!workspace) {
       ctx.ui.toast(`未找到工作区：${workspaceId}`);
-      return;
+      await persistLaunch({
+        currentStepId: null,
+        currentStepTitle: "未找到工作区",
+        status: "done",
+        result: "error",
+        completedAt: Date.now(),
+        errorMessage: `未找到工作区：${workspaceId}`
+      });
+      return "error";
     }
 
     const allSteps = (await ctx.storage.get("steps")) || [];
@@ -82,20 +176,38 @@ async function runWorkspace(ctx, workspaceId) {
       .sort((a, b) => a.order - b.order);
 
     ctx.ui.toast(`正在启动工作区「${workspace.name}」...`);
-    
-    await ctx.storage.set("active_launch", {
-      workspaceId,
+
+    await persistLaunch({
       workspaceName: workspace.name,
       totalSteps: steps.length,
-      currentStepIndex: 0,
-      currentStepTitle: "初始化中...",
       status: "running"
     });
+    heartbeatTimer = setInterval(() => {
+      void (async () => {
+        try {
+          if (launchSettled) return;
+          const control = await ctx.storage.get("launch_control");
+          if (control?.launchId === cancellation.launchId) {
+            cancellation.requested = true;
+          }
+          if (launchSettled) return;
+          await persistLaunch({});
+        } catch (error) {
+          // A transient heartbeat write failure must not create an unhandled
+          // rejection or replace the actual launch result.
+          if (error?.code === "ORBIT_WORKSPACE_OWNERSHIP_LOST") {
+            cancellation.ownershipLost = true;
+            cancellation.requested = true;
+          }
+        }
+      })();
+    }, 2000);
 
     const stepStatuses = {};
     let currentIdx = 0;
 
     for (const step of steps) {
+      assertNotCancelled(cancellation);
       if (step.dependsOn && step.dependsOn.length > 0) {
         const met = step.dependsOn.every((depId) => stepStatuses[depId] === true);
         if (!met) {
@@ -108,23 +220,23 @@ async function runWorkspace(ctx, workspaceId) {
         }
       }
 
-      await ctx.storage.set("active_launch", {
-        workspaceId,
-        workspaceName: workspace.name,
-        totalSteps: steps.length,
+      await persistLaunch({
         currentStepIndex: currentIdx,
+        currentStepId: step.id,
         currentStepTitle: step.delayMs ? `延迟中: ${step.title}` : `启动中: ${step.title}`,
+        completedStepIds: Object.keys(stepStatuses).filter((stepId) => stepStatuses[stepId] === true),
+        failedStepCount: failedSteps,
         status: "running"
       });
 
       if (step.delayMs && step.delayMs > 0) {
         ctx.ui.toast(`等待延迟 ${step.delayMs / 1000} 秒...`);
-        await delay(step.delayMs);
+        await delay(step.delayMs, cancellation);
       }
 
       if (step.type === "wait" || step.waitCondition) {
         const cond = step.waitCondition || { type: "time", value: String(step.delayMs || 0) };
-        const ok = await waitForCondition(ctx, cond);
+        const ok = await waitForCondition(ctx, cond, cancellation);
         if (!ok) {
           stepStatuses[step.id] = false;
           failedSteps++;
@@ -156,6 +268,7 @@ async function runWorkspace(ctx, workspaceId) {
       }
 
       if (!alreadyRunning) {
+        assertNotCancelled(cancellation);
         try {
           if (step.type === "script") {
             const cfg = step.scriptConfig || { type: "bat", content: "", useFile: false };
@@ -184,7 +297,7 @@ async function runWorkspace(ctx, workspaceId) {
         stepStatuses[step.id] = true;
         successSteps++;
         if (step.windowLayout && !alreadyRunning) {
-          restoreWindowPositionBackground(ctx, step.title, step.windowLayout);
+          restoreWindowPositionBackground(ctx, step.title, step.windowLayout, cancellation);
         }
       } else {
         stepStatuses[step.id] = false;
@@ -200,10 +313,6 @@ async function runWorkspace(ctx, workspaceId) {
       }
       currentIdx++;
     }
-
-    await ctx.storage.set("active_launch", {
-      status: "done"
-    });
 
     const updatedWorkspaces = workspaces.map((ws) => {
       if (ws.id === workspaceId) {
@@ -234,12 +343,145 @@ async function runWorkspace(ctx, workspaceId) {
     const existingLogs = (await ctx.storage.get("logs")) || [];
     await ctx.storage.set("logs", [log, ...existingLogs].slice(0, 100));
 
-    ctx.ui.toast(`工作区「${workspace.name}」启动完成！`);
-  } catch (error) {
-    ctx.ui.toast(`启动工作区失败：${String(error)}`);
-    await ctx.storage.set("active_launch", {
-      status: "done"
+    const launchSucceeded = failedSteps === 0;
+    await persistLaunch({
+      currentStepIndex: steps.length,
+      currentStepId: null,
+      currentStepTitle: launchSucceeded ? "启动完成" : "启动完成，部分步骤失败",
+      completedStepIds: Object.keys(stepStatuses).filter((stepId) => stepStatuses[stepId] === true),
+      failedStepCount: failedSteps,
+      status: "done",
+      result: launchSucceeded ? "success" : "error",
+      completedAt: Date.now(),
+      errorMessage: launchSucceeded
+        ? null
+        : errors[0]?.errorMsg || "一个或多个启动步骤失败"
     });
+
+    ctx.ui.toast(`工作区「${workspace.name}」启动完成！`);
+    return launchSucceeded ? "success" : "error";
+  } catch (error) {
+    const ownershipLost =
+      error?.code === "ORBIT_WORKSPACE_OWNERSHIP_LOST" ||
+      cancellation.ownershipLost;
+    if (ownershipLost) {
+      ctx.ui.toast("工作区启动所有权已转移，旧任务已停止");
+      return "cancelled";
+    }
+    const cancelled = error?.code === "ORBIT_WORKSPACE_CANCELLED";
+    ctx.ui.toast(cancelled ? "工作区启动已取消" : `启动工作区失败：${String(error)}`);
+    await persistLaunch({
+      currentStepId: null,
+      currentStepTitle: cancelled ? "启动已取消" : "启动失败",
+      completedStepIds: launchSnapshot.completedStepIds || [],
+      failedStepCount: cancelled ? failedSteps : Math.max(1, failedSteps),
+      status: "done",
+      result: cancelled ? "cancelled" : "error",
+      completedAt: Date.now(),
+      errorMessage: cancelled ? null : String(error)
+    });
+    return cancelled ? "cancelled" : "error";
+  } finally {
+    launchSettled = true;
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+    }
+    const control = await ctx.storage.get("launch_control");
+    if (control?.launchId === cancellation.launchId) {
+      await ctx.storage.set("launch_control", null);
+    }
+  }
+}
+
+async function runWorkspace(ctx, workspaceId) {
+  if (activeWorkspaceLaunch || workspaceClaimPending) {
+    const message =
+      activeWorkspaceLaunchId === workspaceId
+        ? "该工作区正在启动，请勿重复提交"
+        : "已有工作区正在启动，请等待当前任务完成";
+    ctx.ui.toast(message);
+    throw new Error(message);
+  }
+
+  workspaceClaimPending = true;
+  activeWorkspaceLaunchId = workspaceId;
+  try {
+    const lockResult = await requestWorkspaceLaunchLock(async () => {
+      const storedLaunch = await ctx.storage.get("active_launch");
+      if (
+        storedLaunch?.status === "running" &&
+        Date.now() -
+          Number(storedLaunch.updatedAt || storedLaunch.startedAt || 0) <
+          WORKSPACE_LAUNCH_LEASE_MS
+      ) {
+        const message =
+          storedLaunch.workspaceId === workspaceId
+            ? "该工作区正在另一个窗口中启动，请勿重复提交"
+            : "已有工作区正在另一个窗口中启动，请等待当前任务完成";
+        ctx.ui.toast(message);
+        throw new Error(message);
+      }
+
+      const launchId =
+        globalThis.crypto?.randomUUID?.() ||
+        `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const cancellation = {
+        requested: false,
+        ownershipLost: false,
+        launchId
+      };
+      await ctx.storage.set("launch_control", null);
+      const claimedAt = Date.now();
+      await ctx.storage.set("active_launch", {
+        launchId,
+        ownerRuntimeId: workspaceRuntimeId,
+        workspaceId,
+        workspaceName: "",
+        totalSteps: 0,
+        currentStepIndex: 0,
+        currentStepId: null,
+        currentStepTitle: "初始化中...",
+        completedStepIds: [],
+        failedStepCount: 0,
+        status: "running",
+        result: null,
+        startedAt: claimedAt,
+        updatedAt: claimedAt,
+        completedAt: null,
+        errorMessage: null
+      });
+      const confirmedClaim = await ctx.storage.get("active_launch");
+      if (
+        confirmedClaim?.launchId !== launchId ||
+        confirmedClaim?.ownerRuntimeId !== workspaceRuntimeId
+      ) {
+        throw ownershipLostError();
+      }
+
+      activeWorkspaceCancellation = cancellation;
+      const launch = runWorkspaceInternal(ctx, workspaceId, cancellation);
+      activeWorkspaceLaunch = launch;
+      try {
+        return await launch;
+      } finally {
+        if (activeWorkspaceLaunch === launch) {
+          activeWorkspaceLaunch = null;
+          activeWorkspaceCancellation = null;
+        }
+      }
+    });
+
+    if (!lockResult.acquired) {
+      const message = "另一个窗口正在启动工作区，请等待当前任务完成";
+      ctx.ui.toast(message);
+      throw new Error(message);
+    }
+    return lockResult.value;
+  } finally {
+    workspaceClaimPending = false;
+    if (!activeWorkspaceLaunch) {
+      activeWorkspaceLaunchId = null;
+    }
   }
 }
 
@@ -263,9 +505,8 @@ async function registerWorkspaceCommands(ctx) {
       subtitle: ws.description || "一键启动工作区环境",
       icon: ws.icon || "Briefcase",
       keywords: ["workspace", "工作区", ws.name],
-      run: () => {
-        runWorkspace(ctx, ws.id);
-      },
+      timeoutMs: WORKSPACE_COMMAND_TIMEOUT_MS,
+      run: () => runWorkspace(ctx, ws.id),
     });
     commandDisposers.push(dispose);
   }
@@ -280,9 +521,67 @@ class WorkspacesPlugin {
   constructor() {
     this.searchProviderDisposer = null;
     this.reloadCommandDisposer = null;
+    this.cancelCommandDisposer = null;
+    this.recoveryTimer = null;
+    this.recoveryCheckInFlight = false;
+  }
+
+  async recoverInterruptedLaunchIfStale(ctx) {
+    if (this.recoveryCheckInFlight) return;
+    this.recoveryCheckInFlight = true;
+    try {
+      await requestWorkspaceLaunchLock(async () => {
+        const interruptedLaunch = await ctx.storage.get("active_launch");
+        if (interruptedLaunch?.status !== "running") return;
+        if (
+          interruptedLaunch.ownerRuntimeId === workspaceRuntimeId &&
+          activeWorkspaceCancellation?.launchId === interruptedLaunch.launchId
+        ) {
+          return;
+        }
+
+        const lastHeartbeatAt = Number(
+          interruptedLaunch.updatedAt || interruptedLaunch.startedAt || 0
+        );
+        if (Date.now() - lastHeartbeatAt < WORKSPACE_LAUNCH_LEASE_MS) return;
+
+        // The exclusive Web Lock fences this read/write sequence from a new
+        // launch claim in every renderer that shares the OrbitStart origin.
+        const latestLaunch = await ctx.storage.get("active_launch");
+        const latestHeartbeatAt = Number(
+          latestLaunch?.updatedAt || latestLaunch?.startedAt || 0
+        );
+        if (
+          latestLaunch?.status !== "running" ||
+          latestLaunch?.launchId !== interruptedLaunch.launchId ||
+          Date.now() - latestHeartbeatAt < WORKSPACE_LAUNCH_LEASE_MS
+        ) {
+          return;
+        }
+
+        const recoveredAt = Date.now();
+        await ctx.storage.set("active_launch", {
+          ...latestLaunch,
+          currentStepId: null,
+          currentStepTitle: "上一次启动已因应用重启而停止",
+          status: "done",
+          result: "cancelled",
+          updatedAt: recoveredAt,
+          completedAt: recoveredAt,
+          errorMessage: null
+        });
+      });
+    } finally {
+      this.recoveryCheckInFlight = false;
+    }
   }
 
   async activate(ctx) {
+    await this.recoverInterruptedLaunchIfStale(ctx);
+    this.recoveryTimer = setInterval(() => {
+      void this.recoverInterruptedLaunchIfStale(ctx);
+    }, Math.max(2000, Math.floor(WORKSPACE_LAUNCH_LEASE_MS / 2)));
+
     // 1. Register workspaces reload command (so the UI can trigger command list update)
     this.reloadCommandDisposer = ctx.commands.registerCommand({
       id: "reload",
@@ -294,6 +593,37 @@ class WorkspacesPlugin {
         await registerWorkspaceCommands(ctx);
         ctx.ui.toast("工作区启动命令已同步");
       },
+    });
+
+    this.cancelCommandDisposer = ctx.commands.registerCommand({
+      id: "cancel-active-launch",
+      title: "取消当前工作区启动",
+      subtitle: "停止尚未执行的工作区步骤",
+      icon: "X",
+      keywords: ["cancel", "workspace", "取消", "工作区"],
+      run: async () => {
+        const currentLaunch = await ctx.storage.get("active_launch");
+        if (currentLaunch?.status !== "running") {
+          ctx.ui.toast("当前没有正在启动的工作区");
+          return;
+        }
+        if (
+          activeWorkspaceCancellation &&
+          activeWorkspaceCancellation.launchId === currentLaunch.launchId
+        ) {
+          activeWorkspaceCancellation.requested = true;
+        } else if (currentLaunch.launchId) {
+          await ctx.storage.set("launch_control", {
+            launchId: currentLaunch.launchId,
+            requestedAt: Date.now(),
+            requestedByRuntimeId: workspaceRuntimeId
+          });
+        } else {
+          ctx.ui.toast("当前启动记录缺少任务标识，无法安全取消");
+          return;
+        }
+        ctx.ui.toast("正在取消工作区启动...");
+      }
     });
 
     // 2. Register initial workspace commands
@@ -316,15 +646,21 @@ class WorkspacesPlugin {
             icon: ws.icon || "Briefcase",
             source: "workspaces",
             actionLabel: "启动工作区",
-            run: () => {
-              runWorkspace(ctx, ws.id);
-            },
+            timeoutMs: WORKSPACE_COMMAND_TIMEOUT_MS,
+            run: () => runWorkspace(ctx, ws.id),
           }));
       }
     );
   }
 
   deactivate() {
+    if (this.recoveryTimer !== null) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+    if (activeWorkspaceCancellation) {
+      activeWorkspaceCancellation.requested = true;
+    }
     for (const dispose of commandDisposers) {
       try {
         dispose();
@@ -350,6 +686,15 @@ class WorkspacesPlugin {
         // Ignore
       }
       this.reloadCommandDisposer = null;
+    }
+
+    if (this.cancelCommandDisposer) {
+      try {
+        this.cancelCommandDisposer();
+      } catch (e) {
+        // Ignore
+      }
+      this.cancelCommandDisposer = null;
     }
   }
 }

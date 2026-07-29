@@ -940,6 +940,7 @@ export const themes: ThemeManifest[] = [
 
 export const settings: AppSettings = {
   activeThemeId: "local-galaxy",
+  motionMode: "standard",
   safeMode: false,
   density: "comfortable",
   globalHotkey: "Ctrl+Alt+Space",

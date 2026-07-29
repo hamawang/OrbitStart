@@ -1,6 +1,6 @@
 {
   "name": "orbitstart",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,8 +18,8 @@
     "performance:compare": "node tools/compare-performance-measurements.mjs",
     "test:performance": "node tests/performance-compare-harness.cjs",
     "test:plugin-security": "node tools/check-plugin-security-contract.mjs",
-    "test:plugin-host": "node tests/plugin-host-lifecycle-harness.cjs",
-    "test:e2e": "node tools/run-e2e.mjs tests/basic.spec.ts tests/resource-path-repair.spec.ts tests/workspaces.spec.ts",
+    "test:plugin-host": "node tests/plugin-host-lifecycle-harness.cjs && node tests/workspace-launch-harness.cjs && node tests/plugin-worker-timeout-harness.cjs",
+    "test:e2e": "node tools/run-e2e.mjs tests/basic.spec.ts tests/resource-path-repair.spec.ts tests/workspaces.spec.ts tests/motion.spec.ts tests/bubble-motion.spec.ts",
     "test:e2e:themes": "node tools/run-e2e.mjs tests/atelier-zero.spec.ts",
     "test:custom": "node tools/check-plugin-security-contract.mjs && node tests/custom-harness.cjs"
   },
@@ -31,6 +31,7 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.468.0",
+    "motion": "^12.43.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

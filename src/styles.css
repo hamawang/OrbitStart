@@ -182,7 +182,10 @@ textarea:focus-visible {
   mix-blend-mode: screen;
   opacity: 0.36;
   transform: scale(1.02);
-  animation: galaxy-silk-drift 36s ease-in-out infinite alternate;
+}
+
+:root[data-motion="full"][data-window-state="visible"] .local-galaxy-backdrop[data-motion-continuous]::before {
+  animation: orbit-local-galaxy-silk-drift var(--motion-brand-cycle) var(--ease-standard) infinite alternate;
 }
 
 .local-galaxy-backdrop::after {
@@ -245,7 +248,7 @@ textarea:focus-visible {
   mix-blend-mode: screen;
 }
 
-@keyframes galaxy-silk-drift {
+@keyframes orbit-local-galaxy-silk-drift {
   from {
     transform: scale(1.02) translate3d(-10px, -6px, 0);
   }
@@ -474,7 +477,7 @@ textarea:focus-visible {
   mix-blend-mode: screen;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease-out;
+  transition: opacity var(--motion-base) var(--ease-standard);
 }
 
 :root[data-theme="local-galaxy"] .search-shell::before {
@@ -569,7 +572,6 @@ textarea:focus-visible {
   --line-focus: rgba(39, 215, 198, 0.58);
   --shadow-card: 0 18px 52px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(255, 242, 198, 0.025);
   --shadow-elevated: 0 28px 100px rgba(0, 0, 0, 0.58), 0 0 46px rgba(39, 215, 198, 0.1);
-  --lg-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --lg-panel-bg:
     radial-gradient(circle at 92% 0%, rgba(214, 168, 92, 0.12), transparent 34%),
     radial-gradient(circle at 8% 100%, rgba(39, 215, 198, 0.08), transparent 28%),
@@ -604,7 +606,9 @@ textarea:focus-visible {
 
 :root[data-theme="local-galaxy"] .window-controls button {
   color: rgba(201, 191, 168, 0.78);
-  transition: background 160ms var(--lg-ease), color 160ms var(--lg-ease);
+  transition:
+    background var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
 }
 
 :root[data-theme="local-galaxy"] .window-controls button:hover {
@@ -748,11 +752,11 @@ textarea:focus-visible {
 :root[data-theme="local-galaxy"] .data-row,
 :root[data-theme="local-galaxy"] .log-row {
   transition:
-    transform 180ms var(--lg-ease),
-    border-color 180ms var(--lg-ease),
-    background 180ms var(--lg-ease),
-    box-shadow 180ms var(--lg-ease),
-    color 180ms var(--lg-ease);
+    transform var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    background var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
 }
 
 :root[data-theme="local-galaxy"] .rail-button:hover,
@@ -766,8 +770,6 @@ textarea:focus-visible {
   box-shadow: 0 0 20px rgba(39, 215, 198, 0.1);
 }
 
-:root[data-theme="local-galaxy"] .rail-button:hover,
-:root[data-theme="local-galaxy"] .icon-action:hover,
 :root[data-theme="local-galaxy"] .secondary-action:hover,
 :root[data-theme="local-galaxy"] .wide-command:hover,
 :root[data-theme="local-galaxy"] .switch-button:hover {
@@ -877,7 +879,9 @@ textarea:focus-visible {
   mix-blend-mode: screen;
   opacity: 0.055;
   pointer-events: none;
-  transition: opacity 180ms var(--lg-ease), transform 180ms var(--lg-ease);
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-standard);
 }
 
 :root[data-theme="local-galaxy"] .resource-row::after,
@@ -912,6 +916,11 @@ textarea:focus-visible {
   z-index: 2;
 }
 
+:root[data-theme="local-galaxy"] .resource-row > .resource-hotkey-badge {
+  position: absolute;
+  z-index: 3;
+}
+
 :root[data-theme="local-galaxy"] .resource-row:hover,
 :root[data-theme="local-galaxy"] .resource-row.selected,
 :root[data-theme="local-galaxy"] .theme-card:hover,
@@ -919,7 +928,6 @@ textarea:focus-visible {
 :root[data-theme="local-galaxy"] .plugin-card:hover,
 :root[data-theme="local-galaxy"] .data-row:hover,
 :root[data-theme="local-galaxy"] .log-row:hover {
-  transform: translateY(-2px);
   border-color: rgba(39, 215, 198, 0.42);
   background:
     radial-gradient(circle at 86% 8%, rgba(214, 168, 92, 0.12), transparent 34%),
@@ -929,6 +937,14 @@ textarea:focus-visible {
     0 18px 42px rgba(0, 0, 0, 0.34),
     0 0 28px rgba(39, 215, 198, 0.1),
     inset 0 1px 0 rgba(255, 242, 198, 0.08);
+}
+
+:root[data-theme="local-galaxy"] .theme-card:hover,
+:root[data-theme="local-galaxy"] .theme-card.selected,
+:root[data-theme="local-galaxy"] .plugin-card:hover,
+:root[data-theme="local-galaxy"] .data-row:hover,
+:root[data-theme="local-galaxy"] .log-row:hover {
+  transform: translateY(-2px);
 }
 
 :root[data-theme="local-galaxy"] .resource-row:hover::before,
@@ -984,7 +1000,8 @@ textarea:focus-visible {
   text-shadow: 0 0 18px rgba(214, 168, 92, 0.2);
 }
 
-:root[data-theme="local-galaxy"] .kpi-card:nth-child(even) strong {
+:root[data-theme="local-galaxy"] .kpi-card:nth-child(even) strong,
+:root[data-theme="local-galaxy"] .workbench-kpi-sortable:nth-child(even) .kpi-card strong {
   color: var(--teal-soft);
   text-shadow: 0 0 18px rgba(39, 215, 198, 0.22);
 }
@@ -1104,22 +1121,6 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .local-galaxy-backdrop::before {
     animation: none;
-  }
-
-  :root[data-theme="local-galaxy"] .rail-button,
-  :root[data-theme="local-galaxy"] .icon-action,
-  :root[data-theme="local-galaxy"] .primary-action,
-  :root[data-theme="local-galaxy"] .secondary-action,
-  :root[data-theme="local-galaxy"] .wide-command,
-  :root[data-theme="local-galaxy"] .switch-button,
-  :root[data-theme="local-galaxy"] .group-tabs button,
-  :root[data-theme="local-galaxy"] .settings-menu button,
-  :root[data-theme="local-galaxy"] .resource-row,
-  :root[data-theme="local-galaxy"] .theme-card,
-  :root[data-theme="local-galaxy"] .plugin-card,
-  :root[data-theme="local-galaxy"] .data-row,
-  :root[data-theme="local-galaxy"] .log-row {
-    transition-duration: 0ms;
   }
 }
 
@@ -1358,14 +1359,21 @@ textarea:focus-visible {
   cursor: pointer;
   outline: none;
   position: relative;
-  transition: border-color 200ms ease, background 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+  transition:
+    border-color var(--motion-panel) var(--ease-standard),
+    background var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard);
   box-sizing: border-box;
 }
 
 .sidebar-cosmic-settings-btn .settings-gear {
   color: var(--gold);
   opacity: 0.85;
-  transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1), color 200ms ease, opacity 200ms ease;
+  transition:
+    transform var(--motion-emphasis) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard),
+    opacity var(--motion-panel) var(--ease-standard);
   z-index: 2;
 }
 
@@ -1467,7 +1475,11 @@ textarea:focus-visible {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: background 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out, transform 140ms ease-out;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .rail-button:hover,
@@ -1614,6 +1626,39 @@ textarea:focus-visible {
   color: rgba(143, 154, 175, 0.76);
 }
 
+.search-shell-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.search-clear-button {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  animation: orbit-search-clear-enter var(--motion-instant) var(--ease-enter) both;
+}
+
+.search-clear-button:hover,
+.search-clear-button:focus-visible {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--field-strong) 86%, transparent);
+  color: var(--text);
+}
+
+@keyframes orbit-search-clear-enter {
+  from {
+    opacity: 0;
+  }
+}
+
 kbd {
   min-width: 44px;
   padding: 3px 7px;
@@ -1639,7 +1684,11 @@ kbd {
   min-height: 36px;
   border-radius: 10px;
   cursor: pointer;
-  transition: background 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out, transform 140ms ease-out;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .primary-action {
@@ -1832,7 +1881,16 @@ kbd {
 }
 
 .dashboard-grid.workbench-collapsed {
+  position: relative;
   grid-template-columns: minmax(0, 1fr);
+}
+
+.dashboard-grid.workbench-collapsed > .operations-panel[data-motion-panel="workbench"] {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 4;
+  width: min(320px, 100%);
 }
 
 .surface-panel,
@@ -1971,7 +2029,10 @@ kbd {
   cursor: pointer;
   line-height: 0;
   vertical-align: middle;
-  transition: border-color 140ms ease-out, background 140ms ease-out, color 140ms ease-out;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
 .subtag-collapse-button:hover {
@@ -1985,11 +2046,16 @@ kbd {
   width: 15px;
   height: 15px;
   margin: auto;
-  transform: none;
+  transform: rotate(0deg);
+  transition: transform var(--motion-base) var(--ease-standard);
 }
 
 .subtag-collapse-button.expanded svg {
-  transform: none;
+  transform: rotate(90deg);
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .subtag-collapse-button svg {
+  transition: none;
 }
 
 .subtag-resource-title {
@@ -2052,18 +2118,25 @@ kbd {
   top: var(--space-2);
   right: var(--space-2);
   z-index: 3;
-  max-width: calc(100% - var(--space-5));
+  display: inline-flex;
+  width: max-content;
+  max-width: calc(100% - var(--space-4));
+  min-height: 18px;
+  align-items: center;
+  box-sizing: border-box;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--surface) 72%, transparent);
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  background: var(--theme-accent);
-  box-shadow: 0 2px 5px color-mix(in srgb, var(--bg-deep) 36%, transparent);
-  color: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 52%, var(--line));
+  border-radius: 6px;
+  padding: 2px 6px 3px;
+  background: color-mix(in srgb, var(--surface-strong, var(--surface)) 92%, var(--theme-accent) 8%);
+  box-shadow:
+    0 3px 9px color-mix(in srgb, var(--bg-deep) 24%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--theme-accent);
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.015em;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2071,8 +2144,8 @@ kbd {
 }
 
 .resource-row.simple-mode .resource-hotkey-badge {
-  top: var(--space-1);
-  right: var(--space-1);
+  top: 6px;
+  right: 6px;
   font-size: 9px;
 }
 
@@ -3213,10 +3286,10 @@ kbd {
 }
 
 .spin-icon {
-  animation: orbit-spin 0.9s linear infinite;
+  animation: orbit-app-spinner var(--motion-spinner-fast) linear infinite;
 }
 
-@keyframes orbit-spin {
+@keyframes orbit-app-spinner {
   to {
     transform: rotate(360deg);
   }
@@ -3646,7 +3719,7 @@ kbd {
   box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
-  animation: context-menu-in 110ms ease-out both;
+  animation: orbit-context-menu-enter var(--motion-fast) var(--ease-enter) both;
 }
 
 .context-menu button {
@@ -3717,7 +3790,7 @@ kbd {
   background: rgba(5, 8, 18, 0.72);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  animation: backdrop-fade 160ms ease-out both;
+  animation: orbit-backdrop-enter var(--motion-base) var(--ease-enter) both;
 }
 
 .centered-backdrop {
@@ -3747,7 +3820,7 @@ kbd {
 
 .command-palette,
 .modal-panel {
-  animation: modal-rise 190ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: orbit-modal-enter var(--motion-panel) var(--ease-enter) both;
 }
 
 .palette-input {
@@ -3854,12 +3927,21 @@ kbd {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
+  animation: orbit-palette-clear-enter var(--motion-instant) var(--ease-enter) both;
 }
 
 .palette-clear-btn:hover {
   background: rgba(255,255,255,0.08);
   color: var(--text);
+}
+
+@keyframes orbit-palette-clear-enter {
+  from {
+    opacity: 0;
+  }
 }
 
 .modal-panel {
@@ -4268,7 +4350,7 @@ kbd {
   min-height: 36px;
 }
 
-@keyframes backdrop-fade {
+@keyframes orbit-backdrop-enter {
   from {
     opacity: 0;
   }
@@ -4277,7 +4359,7 @@ kbd {
   }
 }
 
-@keyframes context-menu-in {
+@keyframes orbit-context-menu-enter {
   from {
     opacity: 0;
     transform: translateY(-2px) scale(0.98);
@@ -4288,7 +4370,7 @@ kbd {
   }
 }
 
-@keyframes modal-rise {
+@keyframes orbit-modal-enter {
   from {
     opacity: 0;
     transform: translateY(14px) scale(0.98);
@@ -4648,7 +4730,9 @@ kbd {
   box-shadow: var(--shadow-card) !important;
   border-radius: var(--radius) !important;
   background: var(--surface) !important;
-  transition: transform 100ms var(--ease-standard), box-shadow 100ms var(--ease-standard) !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .mini-panel {
@@ -4664,15 +4748,13 @@ kbd {
 }
 
 /* 3. Interactive Cards Hover & Tactile Press */
-:root[data-theme="creative-mode"] .resource-row:hover {
+:root[data-theme="creative-mode"] .resource-row:hover:not(.placeholder):not(.dragging) {
   background: var(--surface) !important;
   border-color: var(--line) !important;
   box-shadow: 6px 6px 0px var(--line) !important;
-  transform: translate(-2px, -2px) !important;
 }
 
 :root[data-theme="creative-mode"] .resource-row:active {
-  transform: translate(2px, 2px) !important;
   box-shadow: 1px 1px 0px var(--line) !important;
 }
 
@@ -4690,7 +4772,9 @@ kbd {
   box-shadow: 3px 3px 0px var(--line) !important;
   text-shadow: none !important;
   background-image: none !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .primary-action:hover {
@@ -4711,7 +4795,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .secondary-action:hover,
@@ -4747,7 +4833,9 @@ kbd {
   color: var(--text) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
   font-weight: 700 !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .switch-button:hover {
@@ -4790,7 +4878,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   margin-right: 8px !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .group-tabs button:hover:not(.selected) {
@@ -4956,19 +5046,19 @@ kbd {
 }
 
 /* KPI Card Number Color Rotation */
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(1) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(1) strong {
   color: var(--accent-2) !important; /* Pink/Red for total resources */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(2) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(2) strong {
   color: var(--accent) !important; /* Green for enabled plugins */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(3) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(3) strong {
   color: var(--accent-3) !important; /* Orange/Red for logs/warnings */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(4) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(4) strong {
   color: var(--warning) !important; /* Yellow for others */
 }
 
@@ -4998,7 +5088,7 @@ kbd {
 }
 
 /* Creative Mode Card hover state color change */
-:root[data-theme="creative-mode"] .resource-row:hover {
+:root[data-theme="creative-mode"] .resource-row:hover:not(.placeholder):not(.dragging) {
   background: #f7f0d5 !important;
 }
 
@@ -5006,7 +5096,9 @@ kbd {
 :root[data-theme="creative-mode"] .tile-actions button {
   border-right: 2px solid var(--line) !important;
   color: var(--line) !important;
-  transition: background 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 :root[data-theme="creative-mode"] .tile-actions button:hover {
   color: #ffffff !important;
@@ -5028,7 +5120,9 @@ kbd {
 .plugin-card.is-disabled {
   opacity: 0.55 !important;
   border-style: dashed !important;
-  transition: opacity 160ms ease, border-style 160ms ease !important;
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    border-style var(--motion-base) var(--ease-standard) !important;
 }
 
 .plugin-card.is-disabled .switch-button {
@@ -5102,7 +5196,9 @@ kbd {
   box-shadow: var(--shadow-card) !important;
   border-radius: var(--radius) !important;
   background: var(--surface) !important;
-  transition: transform 100ms var(--ease-standard), box-shadow 100ms var(--ease-standard) !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .mini-panel {
@@ -5118,15 +5214,13 @@ kbd {
 }
 
 /* 3. Interactive Cards Hover & Tactile Press */
-:root[data-theme="creative-mode"] .resource-row:hover {
+:root[data-theme="creative-mode"] .resource-row:hover:not(.placeholder):not(.dragging) {
   background: var(--surface) !important;
   border-color: var(--line) !important;
   box-shadow: 6px 6px 0px var(--line) !important;
-  transform: translate(-2px, -2px) !important;
 }
 
 :root[data-theme="creative-mode"] .resource-row:active {
-  transform: translate(2px, 2px) !important;
   box-shadow: 1px 1px 0px var(--line) !important;
 }
 
@@ -5144,7 +5238,9 @@ kbd {
   box-shadow: 3px 3px 0px var(--line) !important;
   text-shadow: none !important;
   background-image: none !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .primary-action:hover {
@@ -5165,7 +5261,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .secondary-action:hover,
@@ -5201,7 +5299,9 @@ kbd {
   color: var(--text) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
   font-weight: 700 !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .switch-button:hover {
@@ -5244,7 +5344,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   margin-right: 8px !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="creative-mode"] .group-tabs button:hover:not(.selected) {
@@ -5410,19 +5512,19 @@ kbd {
 }
 
 /* KPI Card Number Color Rotation */
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(1) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(1) strong {
   color: var(--accent-2) !important; /* Pink/Red for total resources */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(2) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(2) strong {
   color: var(--accent) !important; /* Green for enabled plugins */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(3) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(3) strong {
   color: var(--accent-3) !important; /* Orange/Red for logs/warnings */
 }
 
-:root[data-theme="creative-mode"] .kpi-grid .kpi-card:nth-child(4) strong {
+:root[data-theme="creative-mode"] .kpi-grid > :nth-child(4) strong {
   color: var(--warning) !important; /* Yellow for others */
 }
 
@@ -5460,7 +5562,9 @@ kbd {
 :root[data-theme="creative-mode"] .tile-actions button {
   border-right: 2px solid var(--line) !important;
   color: var(--line) !important;
-  transition: background 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 :root[data-theme="creative-mode"] .tile-actions button:hover {
   color: #ffffff !important;
@@ -5482,7 +5586,9 @@ kbd {
 .plugin-card.is-disabled {
   opacity: 0.55 !important;
   border-style: dashed !important;
-  transition: opacity 160ms ease, border-style 160ms ease !important;
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    border-style var(--motion-base) var(--ease-standard) !important;
 }
 
 .plugin-card.is-disabled .switch-button {
@@ -5589,7 +5695,9 @@ kbd {
   box-shadow: none !important;
   text-shadow: none !important;
   background-image: none !important;
-  transition: background 120ms ease, border-color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="aurora-focus"] .primary-action:hover {
@@ -5608,7 +5716,10 @@ kbd {
   border: 1px solid var(--line-strong) !important;
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="aurora-focus"] .secondary-action:hover,
@@ -5639,7 +5750,10 @@ kbd {
   border: 1px solid var(--line) !important;
   border-radius: var(--radius-sm) !important;
   color: var(--soft) !important;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="aurora-focus"] .switch-button:hover {
@@ -5670,7 +5784,10 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--soft) !important;
   margin-right: 8px !important;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="aurora-focus"] .group-tabs button:hover:not(.selected) {
@@ -5814,19 +5931,19 @@ kbd {
 }
 
 /* 11. KPI counters color mapping */
-:root[data-theme="aurora-focus"] .kpi-grid .kpi-card:nth-child(1) strong {
+:root[data-theme="aurora-focus"] .kpi-grid > :nth-child(1) strong {
   color: var(--accent) !important; /* Rust red */
 }
 
-:root[data-theme="aurora-focus"] .kpi-grid .kpi-card:nth-child(2) strong {
+:root[data-theme="aurora-focus"] .kpi-grid > :nth-child(2) strong {
   color: var(--ok) !important; /* Green */
 }
 
-:root[data-theme="aurora-focus"] .kpi-grid .kpi-card:nth-child(3) strong {
+:root[data-theme="aurora-focus"] .kpi-grid > :nth-child(3) strong {
   color: var(--warning) !important; /* Gold */
 }
 
-:root[data-theme="aurora-focus"] .kpi-grid .kpi-card:nth-child(4) strong {
+:root[data-theme="aurora-focus"] .kpi-grid > :nth-child(4) strong {
   color: var(--muted) !important;
 }
 
@@ -5993,12 +6110,11 @@ kbd {
 
 /* 3. Interactive Cards Hover & Tactile Press */
 /* Hovering card pops up to cream with royal blue/charcoal text and red offset shadow */
-:root[data-theme="ink-blue"] .resource-row:hover {
+:root[data-theme="ink-blue"] .resource-row:hover:not(.placeholder):not(.dragging) {
   background: var(--bg) !important;
   border-color: var(--line) !important;
   color: var(--line) !important;
   box-shadow: 6px 6px 0px var(--accent-2) !important; /* Red shadow */
-  transform: translate(-2px, -2px) !important;
 }
 
 :root[data-theme="ink-blue"] .resource-row:hover strong {
@@ -6011,7 +6127,6 @@ kbd {
 }
 
 :root[data-theme="ink-blue"] .resource-row:active {
-  transform: translate(2px, 2px) !important;
   box-shadow: 1px 1px 0px var(--line) !important;
 }
 
@@ -6028,7 +6143,9 @@ kbd {
 :root[data-theme="ink-blue"] .tile-actions button {
   border-right: 2px solid rgba(255, 255, 255, 0.15) !important;
   color: rgba(255, 255, 255, 0.8) !important;
-  transition: background 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="ink-blue"] .tile-actions button:last-child {
@@ -6070,7 +6187,9 @@ kbd {
   box-shadow: 3px 3px 0px var(--accent-2) !important; /* Red shadow */
   text-shadow: none !important;
   background-image: none !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="ink-blue"] .primary-action:hover {
@@ -6091,7 +6210,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--line) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="ink-blue"] .secondary-action svg,
@@ -6151,7 +6272,9 @@ kbd {
   color: var(--line) !important;
   box-shadow: 3px 3px 0px var(--line) !important;
   font-weight: 700 !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="ink-blue"] .switch-button:hover {
@@ -6195,7 +6318,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--line) !important;
   margin-right: 8px !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="ink-blue"] .group-tabs button:hover:not(.selected) {
@@ -6386,19 +6511,19 @@ kbd {
 }
 
 /* 11. KPI counters color mapping */
-:root[data-theme="ink-blue"] .kpi-grid .kpi-card:nth-child(1) strong {
+:root[data-theme="ink-blue"] .kpi-grid > :nth-child(1) strong {
   color: var(--accent) !important; /* Orange */
 }
 
-:root[data-theme="ink-blue"] .kpi-grid .kpi-card:nth-child(2) strong {
+:root[data-theme="ink-blue"] .kpi-grid > :nth-child(2) strong {
   color: #ffffff !important;
 }
 
-:root[data-theme="ink-blue"] .kpi-grid .kpi-card:nth-child(3) strong {
+:root[data-theme="ink-blue"] .kpi-grid > :nth-child(3) strong {
   color: var(--accent-2) !important; /* Red */
 }
 
-:root[data-theme="ink-blue"] .kpi-grid .kpi-card:nth-child(4) strong {
+:root[data-theme="ink-blue"] .kpi-grid > :nth-child(4) strong {
   color: var(--accent) !important;
 }
 
@@ -6497,7 +6622,10 @@ kbd {
   box-shadow: var(--shadow-card) !important;
   border-radius: var(--radius) !important;
   background: var(--surface) !important;
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease !important;
+  transition:
+    transform var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="orbit-dark"] .mini-panel {
@@ -6515,7 +6643,12 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   margin-right: 8px !important;
-  transition: all 120ms ease !important;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard) !important;
 }
 
 :root[data-theme="orbit-dark"] .group-tabs button:hover:not(.selected) {
@@ -6528,7 +6661,7 @@ kbd {
   background: var(--accent-2) !important; /* Yellow marker */
   color: #1a1a1a !important;
   border: 2px solid var(--line) !important;
-  border-style: double !important;
+  border-style: solid !important;
   box-shadow: none !important;
   transform: translate(1px, 1px) !important;
 }
@@ -6556,15 +6689,13 @@ kbd {
 }
 
 /* 5. Resource Rows Hover Details */
-:root[data-theme="orbit-dark"] .resource-row:hover {
+:root[data-theme="orbit-dark"] .resource-row:hover:not(.placeholder):not(.dragging) {
   background: #fdf6cf !important;
   border-color: var(--line) !important;
   box-shadow: 4px 4px 0px var(--line) !important;
-  transform: translate(-2px, -2px) !important;
 }
 
 :root[data-theme="orbit-dark"] .resource-row:active {
-  transform: translate(1px, 1px) !important;
   box-shadow: 1px 1px 0px var(--line) !important;
 }
 
@@ -6589,7 +6720,9 @@ kbd {
   text-shadow: none !important;
   background-image: none !important;
   font-weight: 700 !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="orbit-dark"] .primary-action:hover {
@@ -6610,7 +6743,9 @@ kbd {
   border-radius: var(--radius-sm) !important;
   color: var(--text) !important;
   box-shadow: 2px 2px 0px var(--line) !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="orbit-dark"] .secondary-action:hover,
@@ -6647,7 +6782,9 @@ kbd {
   box-shadow: 2px 2px 0px var(--line) !important;
   font-weight: 700 !important;
   margin-left: 12px !important;
-  transition: transform 100ms ease, box-shadow 100ms ease !important;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard) !important;
 }
 
 :root[data-theme="orbit-dark"] .switch-button:hover {
@@ -6768,42 +6905,48 @@ kbd {
 :root[data-theme="orbit-dark"] .kpi-grid .kpi-card {
   border: 1px solid var(--line) !important;
   border-radius: 2px !important;
-  transition: transform 150ms ease, box-shadow 150ms ease !important;
+  transition:
+    transform var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-standard) !important;
 }
 
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(1) {
+:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(1),
+:root[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(1) > .kpi-card {
   background: #fdf5c1 !important; /* Yellow */
   transform: rotate(-1.5deg) !important;
   box-shadow: 3px 3px 0px rgba(26,26,26,0.12) !important;
 }
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(1) strong {
+:root[data-theme="orbit-dark"] .kpi-grid > :nth-child(1) strong {
   color: #b86b13 !important;
 }
 
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(2) {
+:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(2),
+:root[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(2) > .kpi-card {
   background: #e1f5fe !important; /* Blue */
   transform: rotate(1.2deg) !important;
   box-shadow: 3px 3px 0px rgba(26,26,26,0.12) !important;
 }
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(2) strong {
+:root[data-theme="orbit-dark"] .kpi-grid > :nth-child(2) strong {
   color: #0284c7 !important;
 }
 
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(3) {
+:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(3),
+:root[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(3) > .kpi-card {
   background: #ffcdd2 !important; /* Pink */
   transform: rotate(-2deg) !important;
   box-shadow: 3px 3px 0px rgba(26,26,26,0.12) !important;
 }
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(3) strong {
+:root[data-theme="orbit-dark"] .kpi-grid > :nth-child(3) strong {
   color: #c73f5c !important;
 }
 
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(4) {
+:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(4),
+:root[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(4) > .kpi-card {
   background: #f0f4c3 !important; /* Lime */
   transform: rotate(0.8deg) !important;
   box-shadow: 3px 3px 0px rgba(26,26,26,0.12) !important;
 }
-:root[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(4) strong {
+:root[data-theme="orbit-dark"] .kpi-grid > :nth-child(4) strong {
   color: #7c8520 !important;
 }
 
@@ -6821,7 +6964,9 @@ kbd {
 :root[data-theme="orbit-dark"] .tile-actions button {
   border-right: 1px solid var(--line) !important;
   color: var(--line) !important;
-  transition: background 120ms ease, color 120ms ease !important;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard) !important;
 }
 :root[data-theme="orbit-dark"] .tile-actions button:hover {
   color: #ffffff !important;
@@ -7008,7 +7153,11 @@ kbd {
   color: var(--text, #f4ebd3);
   font-size: 13px;
   font-family: var(--font-mono, monospace);
-  transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard);
   outline: none;
 }
 
@@ -7017,14 +7166,27 @@ input.recording {
   border-color: var(--teal, #27d7c6) !important;
   box-shadow: 0 0 12px rgba(39, 215, 198, 0.35) !important;
   background-color: rgba(39, 215, 198, 0.06) !important;
-  animation: hotkey-pulse 1.6s infinite ease-in-out !important;
   color: var(--teal-soft, #65f1e4) !important;
 }
 
-@keyframes hotkey-pulse {
+:root[data-motion="full"][data-window-state="visible"] .hotkey-input-container input.recording,
+:root[data-motion="full"][data-window-state="visible"] input.recording {
+  animation: orbit-hotkey-recording-pulse var(--motion-recording-cycle) var(--ease-standard) infinite !important;
+}
+
+@keyframes orbit-hotkey-recording-pulse {
   0% { border-color: rgba(39, 215, 198, 0.6); }
   50% { border-color: rgba(39, 215, 198, 1); }
   100% { border-color: rgba(39, 215, 198, 0.6); }
+}
+
+:root[data-motion="minimal"] .hotkey-input-container input.recording,
+:root[data-motion="minimal"] input.recording,
+:root[data-motion="off"] .hotkey-input-container input.recording,
+:root[data-motion="off"] input.recording,
+:root[data-window-state="hidden"] .hotkey-input-container input.recording,
+:root[data-window-state="hidden"] input.recording {
+  animation: none !important;
 }
 
 .hotkey-input-container .action-btn {
@@ -7036,7 +7198,12 @@ input.recording {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard);
   white-space: nowrap;
 }
 
@@ -7088,7 +7255,7 @@ input.recording {
   border-radius: var(--radius-sm, 6px);
   padding: 8px 12px;
   margin-bottom: 12px;
-  transition: border-color 0.2s ease;
+  transition: border-color var(--motion-panel) var(--ease-standard);
 }
 
 .import-search-bar:focus-within {
@@ -7136,7 +7303,10 @@ input.recording {
   padding: 2px 6px;
   border-radius: var(--radius-sm, 6px);
   border: 1px solid transparent;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard);
 }
 
 .import-toolbar .toolbar-btn:hover {
@@ -7197,7 +7367,9 @@ input.recording {
   cursor: pointer;
   background: transparent;
   border: 1px solid transparent;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard);
 }
 
 .import-preview-item:hover {
@@ -7376,7 +7548,10 @@ input.recording {
   color: var(--soft);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
 }
 
 .group-tag-checkbox:hover {
@@ -7404,10 +7579,10 @@ input.recording {
   justify-content: center;
   background: rgba(5, 8, 18, 0.85);
   backdrop-filter: blur(16px) saturate(1.4);
-  animation: onboarding-fade-in 0.35s ease-out both;
+  animation: orbit-onboarding-backdrop-enter var(--motion-emphasis) var(--ease-enter) both;
 }
 
-@keyframes onboarding-fade-in {
+@keyframes orbit-onboarding-backdrop-enter {
   from { opacity: 0; }
   to { opacity: 1; }
 }
@@ -7424,7 +7599,9 @@ input.recording {
     0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   display: flex;
   flex-direction: column;
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition:
+    transform var(--motion-emphasis) var(--ease-standard),
+    opacity var(--motion-panel) var(--ease-standard);
 }
 
 .onboarding-wizard.transitioning {
@@ -7465,7 +7642,10 @@ input.recording {
   color: var(--muted, #8f9aaf);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard);
 }
 
 .onboarding-skip:hover {
@@ -7483,16 +7663,15 @@ input.recording {
 }
 
 .onboarding-progress span {
-  width: 28px;
+  width: 40px;
   height: 4px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.08);
-  transition: all 0.3s ease;
+  transition: background-color var(--motion-emphasis) var(--ease-standard);
 }
 
 .onboarding-progress span.active {
   background: var(--accent, #27d7c6);
-  width: 40px;
 }
 
 .onboarding-progress span.done {
@@ -7502,10 +7681,10 @@ input.recording {
 /* Step container */
 .onboarding-step {
   padding: 8px 28px 28px;
-  animation: step-slide-up 0.35s ease-out both;
+  animation: orbit-onboarding-step-enter var(--motion-emphasis) var(--ease-enter) both;
 }
 
-@keyframes step-slide-up {
+@keyframes orbit-onboarding-step-enter {
   from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
 }
@@ -7545,7 +7724,11 @@ input.recording {
   background: transparent;
   cursor: pointer;
   text-align: left;
-  transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard);
 }
 
 .template-card:hover {
@@ -7593,7 +7776,9 @@ input.recording {
 .template-arrow {
   color: var(--muted, #8f9aaf);
   opacity: 0.4;
-  transition: opacity 0.2s, transform 0.2s;
+  transition:
+    opacity var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard);
 }
 
 .template-card:hover .template-arrow {
@@ -7645,7 +7830,10 @@ input.recording {
   color: var(--text, #f4ebd3);
   cursor: pointer;
   text-align: left;
-  transition: all 0.22s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    opacity var(--motion-panel) var(--ease-standard);
 }
 
 .scan-btn:hover:not(:disabled) {
@@ -7712,25 +7900,20 @@ input.recording {
 
 /* Drag and Drop Sortable Resource Card styles */
 .resource-row {
-  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
-              box-shadow 160ms ease-out,
-              opacity 160ms ease-out;
-}
-
-.resource-row:active {
-  transform: scale(1.01);
+  transition:
+    box-shadow var(--motion-base) var(--ease-standard),
+    opacity var(--motion-base) var(--ease-standard);
 }
 
 .resource-row.placeholder {
   border: 1px dashed var(--accent, var(--teal)) !important;
   background: rgba(39, 215, 198, 0.015) !important;
   box-shadow: none !important;
-  opacity: 0.35 !important;
+  opacity: 0.72 !important;
   transition: none !important;
 }
 
 .resource-row.placeholder * {
-  opacity: 0 !important;
   pointer-events: none !important;
 }
 
@@ -7740,10 +7923,15 @@ input.recording {
   background: var(--surface, rgba(30, 30, 35, 0.95)) !important;
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45), 0 0 0 1.5px var(--accent, var(--teal)) !important;
   border-color: var(--accent, var(--teal)) !important;
-  transform: scale(1.04) !important;
   z-index: 10000 !important;
   pointer-events: none !important;
   transition: none !important;
+}
+
+/* Sortable rows keep dnd-kit as the sole transform owner. Press feedback lives
+   on the inner launch button so theme-specific row transforms cannot fight it. */
+.resource-row .resource-launch:active:not(:disabled) {
+  transform: scale(var(--motion-press-scale, 0.985));
 }
 
 .resource-drag-overlay,
@@ -7762,7 +7950,9 @@ input.recording {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--line);
   margin-right: 6px;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard);
 }
 
 .density-slider-container:hover {
@@ -7773,7 +7963,7 @@ input.recording {
 .density-slider-icon {
   color: var(--muted);
   flex-shrink: 0;
-  transition: color 0.2s ease;
+  transition: color var(--motion-panel) var(--ease-standard);
 }
 
 .density-slider-container:hover .density-slider-icon {
@@ -7788,7 +7978,7 @@ input.recording {
   outline: none;
   -webkit-appearance: none;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background var(--motion-panel) var(--ease-standard);
 }
 
 .density-slider::-webkit-slider-runnable-track {
@@ -7803,7 +7993,9 @@ input.recording {
   border-radius: 50%;
   background: var(--accent, var(--teal));
   cursor: pointer;
-  transition: transform 0.1s ease, background 0.1s ease;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    background var(--motion-instant) var(--ease-standard);
   box-shadow: 0 0 8px rgba(39, 215, 198, 0.4);
 }
 
@@ -7819,7 +8011,9 @@ input.recording {
   border-radius: 50%;
   background: var(--accent, var(--teal));
   cursor: pointer;
-  transition: transform 0.1s ease, background 0.1s ease;
+  transition:
+    transform var(--motion-instant) var(--ease-standard),
+    background var(--motion-instant) var(--ease-standard);
   box-shadow: 0 0 8px rgba(39, 215, 198, 0.4);
 }
 
@@ -7939,8 +8133,8 @@ input.recording {
 /* Tab Hotkey Badge */
 .tab-hotkey-badge {
   position: absolute;
-  top: -6px;
-  right: -2px;
+  top: -4px;
+  right: 8px;
   background: var(--accent);
   color: var(--bg);
   border: 1px solid color-mix(in srgb, var(--bg) 55%, transparent);
@@ -7953,7 +8147,7 @@ input.recording {
   pointer-events: none;
   z-index: 5;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-  transition: opacity 0.15s ease;
+  transition: opacity var(--motion-base) var(--ease-standard);
 }
 
 /* Bind Hotkey Button (Span) */
@@ -7972,7 +8166,11 @@ input.recording {
   justify-content: center;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+  transition:
+    opacity var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard),
+    background var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard);
   z-index: 6;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
@@ -8094,7 +8292,10 @@ body.bubble-menu-body #root {
   border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid var(--line);
-  transition: all 0.2s ease-in-out;
+  transition:
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard),
+    transform var(--motion-panel) var(--ease-standard);
 }
 
 .workspace-card:hover {
@@ -8281,7 +8482,7 @@ body.bubble-menu-body #root {
   border-radius: 50%;
   cursor: pointer;
   border: 2px solid transparent;
-  transition: transform 0.15s ease;
+  transition: transform var(--motion-base) var(--ease-standard);
 }
 
 .preset-color:hover {
@@ -8303,7 +8504,9 @@ body.bubble-menu-body #root {
   background: var(--field-strong);
   border: 1px solid var(--line);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard);
 }
 
 .preset-icon:hover {
@@ -8548,10 +8751,10 @@ body.bubble-menu-body #root {
 }
 
 .spin-animation {
-  animation: spin 1.2s linear infinite;
+  animation: orbit-workspace-editor-spinner var(--motion-spinner) linear infinite;
 }
 
-@keyframes spin {
+@keyframes orbit-workspace-editor-spinner {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
@@ -8569,7 +8772,10 @@ body.bubble-menu-body #root {
   color: var(--muted);
   cursor: pointer;
   padding: 0;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
 }
 
 .icon-button:hover {
@@ -8596,7 +8802,10 @@ body.bubble-menu-body #root {
   font-size: 0.85rem;
   cursor: pointer;
   min-height: 35px;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard);
 }
 
 .select-resource-btn:hover {
@@ -8631,18 +8840,6 @@ body.bubble-menu-body #root {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-elevated);
   overflow: hidden;
-  animation: modal-enter 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes modal-enter {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
 }
 
 .selector-header {
@@ -8683,7 +8880,9 @@ body.bubble-menu-body #root {
   padding: var(--space-3);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 120ms ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
   border: 1px solid transparent;
 }
 
@@ -8796,7 +8995,9 @@ body.bubble-menu-body #root {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard);
   min-height: 44px;
 }
 
@@ -8848,7 +9049,11 @@ body.bubble-menu-body #root {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard);
   padding: 0;
   flex-shrink: 0;
 }
@@ -8866,6 +9071,7 @@ body.bubble-menu-body #root {
 
 /* Workspace Launch Progress Panel Styles */
 .workspace-launch-progress-overlay {
+  --workspace-launch-color: var(--gold);
   position: fixed;
   top: 0;
   left: 0;
@@ -8877,20 +9083,30 @@ body.bubble-menu-body #root {
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: fadeIn 0.25s ease-out;
+}
+
+.workspace-launch-progress-overlay[data-motion-launch-state="success"] {
+  --workspace-launch-color: #37d6bf;
+}
+
+.workspace-launch-progress-overlay[data-motion-launch-state="error"] {
+  --workspace-launch-color: var(--danger, #e76f61);
+}
+
+.workspace-launch-progress-overlay[data-motion-launch-state="cancelled"] {
+  --workspace-launch-color: var(--muted);
 }
 
 .workspace-launch-progress-panel {
   width: 360px;
   background: var(--surface-strong);
-  border: 1px solid var(--line-strong);
+  border: 1px solid color-mix(in srgb, var(--workspace-launch-color) 38%, var(--line-strong));
   border-radius: var(--radius-lg);
   padding: var(--space-4);
   box-shadow: var(--shadow-lg), 0 0 30px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .launch-panel-header {
@@ -8899,7 +9115,15 @@ body.bubble-menu-body #root {
   gap: var(--space-3);
 }
 
-.launch-panel-header h3 {
+.launch-panel-header > span {
+  display: grid;
+  flex: 0 0 auto;
+  color: var(--workspace-launch-color);
+  place-items: center;
+}
+
+.launch-panel-title {
+  display: block;
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
@@ -8913,8 +9137,8 @@ body.bubble-menu-body #root {
 }
 
 .spin-slow {
-  animation: spin 3s linear infinite;
-  color: var(--gold);
+  animation: orbit-workspace-launch-spinner var(--motion-spinner) linear infinite;
+  color: inherit;
 }
 
 .launch-progress-bar-wrapper {
@@ -8926,11 +9150,17 @@ body.bubble-menu-body #root {
 }
 
 .launch-progress-bar-fill {
+  width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, var(--gold), #ffd075);
+  background: linear-gradient(
+    90deg,
+    var(--workspace-launch-color),
+    color-mix(in srgb, var(--workspace-launch-color) 70%, white)
+  );
   border-radius: 3px;
-  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 0 8px rgba(197, 160, 89, 0.4);
+  transition: transform var(--motion-panel) var(--ease-standard);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--workspace-launch-color) 40%, transparent);
+  will-change: transform;
 }
 
 .launch-panel-footer {
@@ -8952,14 +9182,24 @@ body.bubble-menu-body #root {
   white-space: nowrap;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
+.launch-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.launch-panel-actions .compact-action {
+  min-width: 84px;
+  justify-content: center;
+}
+
+@keyframes orbit-workspace-launch-spinner {
   to { transform: rotate(360deg); }
 }
 
-@keyframes scaleIn {
-  from { transform: scale(0.92); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+:root[data-motion="minimal"] :is(.spin-icon, .spin-animation, .spin-slow),
+:root[data-motion="off"] :is(.spin-icon, .spin-animation, .spin-slow),
+:root[data-window-state="hidden"] :is(.spin-icon, .spin-animation, .spin-slow) {
+  animation: none !important;
 }
 
 /* Customized themed select dropdowns inside Workspaces */
@@ -8979,7 +9219,9 @@ body.bubble-menu-body #root {
   color: var(--text) !important;
   font-size: 0.8rem !important;
   height: 32px !important;
-  transition: all 0.2s ease !important;
+  transition:
+    border-color var(--motion-panel) var(--ease-standard),
+    box-shadow var(--motion-panel) var(--ease-standard) !important;
   cursor: pointer !important;
 }
 
@@ -9009,7 +9251,10 @@ body.bubble-menu-body #root {
   cursor: pointer !important;
   font-size: 0.78rem !important;
   color: var(--text-muted) !important;
-  transition: all 0.2s ease !important;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    border-color var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard) !important;
   user-select: none !important;
   margin: 2px 0 !important;
 }
@@ -9102,7 +9347,11 @@ body.bubble-menu-body #root {
   transform: translateY(-50%) !important;
   z-index: 10 !important;
   box-sizing: border-box !important;
-  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease !important;
+  transition:
+    border-color var(--motion-base) var(--ease-standard),
+    background var(--motion-base) var(--ease-standard),
+    color var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-standard) !important;
 }
 
 .workbench-toggle-btn:hover {
@@ -9252,7 +9501,10 @@ body.bubble-menu-body #root {
   color: var(--soft);
   cursor: pointer;
   text-align: left;
-  transition: background 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+  transition:
+    background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
 .resource-tree-item:hover,
@@ -9297,7 +9549,7 @@ body.bubble-menu-body #root {
 }
 
 .resource-tree-expander svg {
-  transition: transform 140ms ease-out;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .resource-tree-expander.expanded svg {
@@ -9456,7 +9708,10 @@ body.bubble-menu-body #root {
   background: rgba(214, 168, 92, 0.055);
   color: var(--soft);
   cursor: pointer;
-  transition: border-color 140ms ease-out, background 140ms ease-out, color 140ms ease-out;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
 .subfolder-card:hover {
@@ -9673,6 +9928,19 @@ body.bubble-menu-body #root {
   margin-bottom: var(--space-2) !important;
 }
 
+.workbench-kpi-sortable,
+.workbench-action-sortable {
+  min-width: 0;
+}
+
+.workbench-kpi-sortable > .workbench-kpi-card {
+  height: 100%;
+}
+
+.workbench-action-sortable > .wide-command {
+  width: 100%;
+}
+
 .workbench-kpi-card {
   min-height: 62px !important;
   padding: var(--space-2) var(--space-3) !important;
@@ -9742,7 +10010,9 @@ body.bubble-menu-body #root {
 
 /* Droppable subtag/root area drag hover states */
 .subtag-droppable-wrapper {
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard);
   border-radius: 8px;
   padding: 4px;
 }
@@ -9752,7 +10022,9 @@ body.bubble-menu-body #root {
 }
 
 .root-droppable-wrapper {
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-instant) var(--ease-standard),
+    box-shadow var(--motion-instant) var(--ease-standard);
   border-radius: 8px;
   min-height: 50px;
 }
@@ -9783,7 +10055,6 @@ body.bubble-menu-body #root {
   align-items: center;
   justify-content: center;
   backdrop-filter: blur(2px);
-  animation: overlayFadeIn 0.15s ease-out;
 }
 
 .droppable-overlay-text {
@@ -9798,17 +10069,6 @@ body.bubble-menu-body #root {
   letter-spacing: 0.5px;
 }
 
-@keyframes overlayFadeIn {
-  from {
-    opacity: 0;
-    backdrop-filter: blur(0px);
-  }
-  to {
-    opacity: 1;
-    backdrop-filter: blur(2px);
-  }
-}
-
 .dialog-backdrop {
   position: fixed !important;
   inset: 0;
@@ -9819,7 +10079,7 @@ body.bubble-menu-body #root {
   background: rgba(5, 8, 18, 0.72);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  animation: backdrop-fade 160ms ease-out both;
+  animation: orbit-backdrop-enter var(--motion-base) var(--ease-enter) both;
 }
 
 /* Sortable Subtag Drag Styling */
@@ -9839,7 +10099,10 @@ body.bubble-menu-body #root {
   border-radius: 4px;
   color: var(--text-muted);
   cursor: grab;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-panel) var(--ease-standard),
+    color var(--motion-panel) var(--ease-standard),
+    opacity var(--motion-panel) var(--ease-standard);
   margin-left: 4px;
   opacity: 0.3;
 }
@@ -9862,4 +10125,292 @@ body.bubble-menu-body #root {
 .subtag-droppable-wrapper.focus-highlight {
   background: rgba(var(--accent-rgb, 122, 144, 255), 0.12) !important;
   box-shadow: 0 0 0 2px var(--accent) !important;
+}
+
+/* Motion orchestration layers. The wrapper owns presence and the single
+   opacity fade; child surfaces own only their directional transform. */
+.motion-presence-layer {
+  position: fixed !important;
+  inset: 0;
+  z-index: 10010 !important;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.motion-presence-layer[data-presence="present"] > * {
+  pointer-events: auto;
+}
+
+.motion-presence-context {
+  z-index: 10020 !important;
+}
+
+.motion-presence-command {
+  opacity: 1 !important;
+}
+
+.motion-presence-command::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(5, 8, 18, 0.72);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  content: "";
+  pointer-events: none;
+}
+
+:root[data-theme="local-galaxy"] .motion-presence-command::before {
+  background:
+    radial-gradient(circle at 72% 18%, rgba(214, 168, 92, 0.14), transparent 26%),
+    radial-gradient(circle at 24% 84%, rgba(39, 215, 198, 0.12), transparent 30%),
+    rgba(5, 8, 18, 0.78);
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+  backdrop-filter: blur(20px) saturate(1.08);
+}
+
+.motion-presence-command > .palette-backdrop {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.motion-presence-layer:has(.item-hotkey-backdrop) {
+  z-index: 11001 !important;
+}
+
+.motion-presence-layer:has(.dialog-backdrop) {
+  z-index: 11000 !important;
+}
+
+.motion-presence-layer:has(.workspace-launch-progress-overlay) {
+  z-index: 99999 !important;
+}
+
+.motion-presence-layer .palette-backdrop,
+.motion-presence-layer .dialog-backdrop,
+.motion-presence-layer .onboarding-backdrop,
+.motion-presence-layer .context-menu,
+.motion-presence-layer .workspace-launch-progress-overlay,
+.motion-presence-layer .workspace-launch-progress-panel {
+  animation: none;
+}
+
+.motion-presence-panel[data-presence="present"] :is(
+  .modal-panel,
+  .dialog-panel,
+  .trip-panel,
+  .import-preview-panel,
+  .resource-path-repair-panel,
+  .editor-panel
+) {
+  animation: orbit-motion-surface-enter var(--motion-dialog) var(--ease-enter) both;
+}
+
+.motion-presence-command[data-presence="present"] .command-palette {
+  animation: orbit-motion-command-enter var(--motion-dialog) var(--ease-enter) both;
+}
+
+.motion-presence-drawer[data-presence="present"] .settings-modal-panel {
+  animation: orbit-motion-drawer-enter var(--motion-panel) var(--ease-enter) both;
+}
+
+.motion-presence-fade[data-presence="present"] .workspace-launch-progress-panel {
+  animation: orbit-motion-surface-enter var(--motion-dialog) var(--ease-enter) both;
+}
+
+.motion-presence-panel[data-presence="exiting"] :is(
+  .modal-panel,
+  .dialog-panel,
+  .trip-panel,
+  .import-preview-panel,
+  .resource-path-repair-panel,
+  .editor-panel
+) {
+  transform: translateY(4px) scale(0.99);
+  transition: transform var(--motion-exit) var(--ease-exit);
+  animation: none;
+}
+
+.motion-presence-command[data-presence="exiting"] .command-palette {
+  transform: translateY(-4px) scale(0.99);
+  transition: transform var(--motion-exit) var(--ease-exit);
+  animation: none;
+}
+
+.motion-presence-drawer[data-presence="exiting"] .settings-modal-panel {
+  transform: translateX(8px);
+  transition: transform var(--motion-drawer-exit) var(--ease-exit);
+  animation: none;
+}
+
+.motion-presence-fade[data-presence="exiting"] .workspace-launch-progress-panel {
+  transform: translateY(4px) scale(0.99);
+  transition: transform var(--motion-exit) var(--ease-exit);
+}
+
+.motion-presence-context[data-presence="present"] .context-menu {
+  animation: orbit-motion-context-enter var(--motion-context) var(--ease-enter) both;
+  transform-origin: top left;
+}
+
+.motion-presence-context[data-presence="exiting"] .context-menu {
+  transform: scale(0.98);
+  transition: transform var(--motion-context-exit) var(--ease-exit);
+  transform-origin: top left;
+}
+
+.motion-presence-layer[data-presence="exiting"],
+.motion-presence-layer[data-presence="exiting"] * {
+  pointer-events: none !important;
+}
+
+@keyframes orbit-motion-surface-enter {
+  from {
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+@keyframes orbit-motion-command-enter {
+  from {
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+
+@keyframes orbit-motion-drawer-enter {
+  from {
+    transform: translateX(12px);
+  }
+}
+
+@keyframes orbit-motion-context-enter {
+  from {
+    transform: scale(0.98);
+  }
+}
+
+.motion-page-stack {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  align-items: start;
+}
+
+.motion-page-content {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 0;
+}
+
+.setting-help {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+:root[data-motion="minimal"] .motion-presence-panel[data-presence="present"] :is(
+  .modal-panel,
+  .dialog-panel,
+  .trip-panel,
+  .import-preview-panel,
+  .resource-path-repair-panel,
+  .editor-panel
+),
+:root[data-motion="minimal"] .motion-presence-command[data-presence="present"] .command-palette,
+:root[data-motion="minimal"] .motion-presence-drawer[data-presence="present"] .settings-modal-panel,
+:root[data-motion="minimal"] .motion-presence-context[data-presence="present"] .context-menu,
+:root[data-motion="minimal"] .motion-presence-fade[data-presence="present"] .workspace-launch-progress-panel {
+  animation: none;
+}
+
+:root[data-motion="minimal"] .motion-presence-panel[data-presence="exiting"] :is(
+  .modal-panel,
+  .dialog-panel,
+  .trip-panel,
+  .import-preview-panel,
+  .resource-path-repair-panel,
+  .editor-panel
+),
+:root[data-motion="minimal"] .motion-presence-command[data-presence="exiting"] .command-palette,
+:root[data-motion="minimal"] .motion-presence-drawer[data-presence="exiting"] .settings-modal-panel,
+:root[data-motion="minimal"] .motion-presence-context[data-presence="exiting"] .context-menu,
+:root[data-motion="minimal"] .motion-presence-fade[data-presence="exiting"] .workspace-launch-progress-panel,
+:root[data-motion="off"] .motion-presence-layer {
+  transform: none !important;
+}
+
+/* Minimal/off retain color and opacity feedback while removing decorative
+   displacement. Sortable/graph transforms are deliberately excluded. */
+:root:is([data-motion="minimal"], [data-motion="off"]) :is(
+  .rail-button,
+  .icon-action,
+  .primary-action,
+  .secondary-action,
+  .danger-action,
+  .wide-command,
+  .switch-button,
+  .theme-card,
+  .plugin-card,
+  .data-row,
+  .log-row,
+  .template-card,
+  .workspace-card,
+  .preset-color,
+  .bind-hotkey-btn,
+  .hotkey-input-container .action-btn,
+  .sidebar-cosmic-settings-btn,
+  .group-tabs button
+):is(:hover, :active, .selected, .active),
+:root:is([data-motion="minimal"], [data-motion="off"]) .resource-row:not(.placeholder):not(.dragging):is(:hover, :active, .selected) {
+  transform: none !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) :is(
+  .resource-row,
+  .theme-card,
+  .plugin-card,
+  .data-row,
+  .log-row
+):is(:hover, .selected)::before,
+:root:is([data-motion="minimal"], [data-motion="off"]) .resource-row:hover .resource-icon,
+:root:is([data-motion="minimal"], [data-motion="off"]) .palette-results button:hover .result-icon,
+:root:is([data-motion="minimal"], [data-motion="off"]) .sidebar-cosmic-settings-btn:hover .settings-gear,
+:root:is([data-motion="minimal"], [data-motion="off"]) .template-card:hover .template-arrow {
+  transform: none !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .density-slider::-webkit-slider-thumb:hover,
+:root:is([data-motion="minimal"], [data-motion="off"]) .density-slider::-moz-range-thumb:hover {
+  transform: none !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .workbench-toggle-btn:not(.group-tabs-toggle):is(:hover, :active) {
+  transform: translateY(-50%) !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"]) .workbench-toggle-btn.group-tabs-toggle:is(:hover, :active) {
+  transform: none !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(1):hover,
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(1) > .kpi-card:hover {
+  transform: rotate(-1.5deg) !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(2):hover,
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(2) > .kpi-card:hover {
+  transform: rotate(1.2deg) !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(3):hover,
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(3) > .kpi-card:hover {
+  transform: rotate(-2deg) !important;
+}
+
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(4):hover,
+:root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(4) > .kpi-card:hover {
+  transform: rotate(0.8deg) !important;
 }

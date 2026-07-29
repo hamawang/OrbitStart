@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createTrip, deleteTrip, listTrips, markTripViewed, updateTrip } from "../lib/native";
 import { renderMarkdown } from "../lib/markdown";
 import { tripCategoryLabels } from "../lib/tripTemplates";
+import { MotionDialog, MotionTooltip } from "../motion";
 import type { OrbitItem, Trip, TripCategory, TripStatus, TripUpdateInput } from "../types";
 import { TripEditor } from "./TripEditor";
 
@@ -33,6 +34,7 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
   const [trips, setTrips] = useState<Trip[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(highlightTripId ?? null);
   const [editingTrip, setEditingTrip] = useState<Trip | null | "new">(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Trip | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -83,11 +85,11 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
   };
 
   const removeTrip = async (trip: Trip) => {
-    if (!window.confirm(`删除 Tip「${trip.title}」？`)) return;
     setBusy(true);
     try {
       await deleteTrip(trip.id);
       setExpandedId(null);
+      setDeleteCandidate(null);
       await refresh();
       await onChanged();
     } finally {
@@ -109,9 +111,11 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
               <PlusCircle size={16} />
               新增 Tip
             </button>
-            <button type="button" className="icon-action" title="关闭" onClick={onClose}>
-              <X size={18} />
-            </button>
+            <MotionTooltip label="关闭" placement="top">
+              <button type="button" className="icon-action" aria-label="关闭" onClick={onClose}>
+                <X size={18} />
+              </button>
+            </MotionTooltip>
           </div>
         </header>
 
@@ -156,12 +160,16 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
                     {selectedTrip.pinned && <span className="trip-status pinned">置顶</span>}
                   </div>
                   <div className="trip-detail-actions">
-                    <button type="button" title="编辑" onClick={() => setEditingTrip(selectedTrip)} disabled={busy}>
-                      <Edit3 size={15} />
-                    </button>
-                    <button type="button" title="删除" onClick={() => void removeTrip(selectedTrip)} disabled={busy}>
-                      <Trash2 size={15} />
-                    </button>
+                    <MotionTooltip label="编辑" placement="top">
+                      <button type="button" aria-label="编辑" onClick={() => setEditingTrip(selectedTrip)} disabled={busy}>
+                        <Edit3 size={15} />
+                      </button>
+                    </MotionTooltip>
+                    <MotionTooltip label="删除" placement="top">
+                      <button type="button" aria-label="删除" onClick={() => setDeleteCandidate(selectedTrip)} disabled={busy}>
+                        <Trash2 size={15} />
+                      </button>
+                    </MotionTooltip>
                   </div>
                 </div>
                 <h3>{selectedTrip.title}</h3>
@@ -182,14 +190,45 @@ export function TripPanel({ item, highlightTripId, onClose, onChanged }: TripPan
           </article>
         </div>
 
-        {editingTrip && (
-          <TripEditor
-            item={item}
-            trip={editingTrip === "new" ? null : editingTrip}
-            onSave={saveTrip}
-            onCancel={() => setEditingTrip(null)}
-          />
-        )}
+        <TripEditor
+          open={Boolean(editingTrip)}
+          item={item}
+          trip={editingTrip && editingTrip !== "new" ? editingTrip : null}
+          onSave={saveTrip}
+          onCancel={() => setEditingTrip(null)}
+        />
+        <MotionDialog
+          open={Boolean(deleteCandidate)}
+          backdropClassName="palette-backdrop centered-backdrop"
+          className="modal-panel"
+          ariaLabelledBy="trip-delete-title"
+          onBackdropClick={() => {
+            if (!busy) setDeleteCandidate(null);
+          }}
+        >
+          <div className="modal-head">
+            <div>
+              <p className="eyebrow">Delete Tip</p>
+              <h2 id="trip-delete-title">删除 Tip</h2>
+            </div>
+          </div>
+          <p>确定删除「{deleteCandidate?.title}」？此操作无法撤销。</p>
+          <div className="modal-actions">
+            <button type="button" className="secondary-action" onClick={() => setDeleteCandidate(null)} disabled={busy}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="danger-action"
+              onClick={() => {
+                if (deleteCandidate) void removeTrip(deleteCandidate);
+              }}
+              disabled={busy}
+            >
+              删除
+            </button>
+          </div>
+        </MotionDialog>
       </div>
     </section>
   );

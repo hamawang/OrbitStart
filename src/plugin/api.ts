@@ -5,6 +5,7 @@ type CommandHandler = () => void | Promise<void>;
 type SearchProvider = (query: string) => SearchResult[] | Promise<SearchResult[]>;
 
 export interface RegisteredCommand extends OrbitCommand {
+  timeoutMs?: number;
   run: CommandHandler;
 }
 

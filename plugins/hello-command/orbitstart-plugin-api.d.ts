@@ -27,6 +27,7 @@ export interface RegisteredCommand {
   subtitle: string;
   icon: string;
   keywords: string[];
+  timeoutMs?: number;
   run(): void | Promise<void>;
 }
 
@@ -39,6 +40,7 @@ export interface SearchResult {
   icon: string;
   source: string;
   actionLabel: string;
+  timeoutMs?: number;
   run?(): void | Promise<void>;
 }
 

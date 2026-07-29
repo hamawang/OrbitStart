@@ -11,6 +11,7 @@ type WindowAppearance = {
 
 export const DEFAULT_BUBBLE_SETTINGS: AppSettings = {
   activeThemeId: "local-galaxy",
+  motionMode: "standard",
   safeMode: false,
   density: "comfortable",
   globalHotkey: "Ctrl+Alt+Space",

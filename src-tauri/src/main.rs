@@ -172,6 +172,7 @@ struct PluginLog {
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
     active_theme_id: String,
+    motion_mode: String,
     safe_mode: bool,
     density: String,
     global_hotkey: String,
@@ -1358,6 +1359,7 @@ mod database_migration_tests {
 fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
     for (key, value) in [
         ("active_theme_id", "local-galaxy"),
+        ("motion_mode", "standard"),
         ("safe_mode", "false"),
         ("density", "comfortable"),
         ("global_hotkey", "Ctrl+Alt+Space"),
@@ -1413,8 +1415,17 @@ fn set_setting_value(conn: &Connection, key: &str, value: &str) -> Result<(), St
 }
 
 fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
+    let motion_mode = match setting(conn, "motion_mode", "standard")?.as_str() {
+        "full" => "full",
+        "minimal" => "minimal",
+        "off" => "off",
+        _ => "standard",
+    }
+    .to_string();
+
     Ok(AppSettings {
         active_theme_id: setting(conn, "active_theme_id", "local-galaxy")?,
+        motion_mode,
         safe_mode: setting(conn, "safe_mode", "false")? == "true",
         density: setting(conn, "density", "comfortable")?,
         global_hotkey: setting(conn, "global_hotkey", "Ctrl+Alt+Space")?,
@@ -5532,6 +5543,35 @@ fn dock_todo_panel_to_main(app: &tauri::AppHandle, force_docked: bool) {
 }
 
 #[cfg(desktop)]
+fn handle_bubble_window_visibility(window: &tauri::Window, event: &WindowEvent) {
+    if !matches!(window.label(), "floating-bubble" | "floating-bubble-menu") {
+        return;
+    }
+
+    match event {
+        WindowEvent::Focused(_) | WindowEvent::Resized(_) => {
+            emit_bubble_window_visibility(
+                window.app_handle(),
+                window.label(),
+                window.is_visible().unwrap_or(false),
+                window.is_minimized().unwrap_or(false),
+                "native-window-event",
+            );
+        }
+        WindowEvent::Destroyed | WindowEvent::CloseRequested { .. } => {
+            emit_bubble_window_visibility(
+                window.app_handle(),
+                window.label(),
+                false,
+                false,
+                "native-window-closed",
+            );
+        }
+        _ => {}
+    }
+}
+
+#[cfg(desktop)]
 fn handle_todo_window_dock(window: &tauri::Window, event: &WindowEvent) {
     match window.label() {
         "main" => match event {
@@ -6982,6 +7022,19 @@ fn set_active_theme(app: tauri::AppHandle, theme_id: String) -> Result<AppSettin
 fn set_density(app: tauri::AppHandle, density: String) -> Result<AppSettings, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "density", &density)?;
+    settings_after_setting_update(&app, &conn)
+}
+
+#[tauri::command]
+fn set_motion_mode(app: tauri::AppHandle, motion_mode: String) -> Result<AppSettings, String> {
+    let normalized = match motion_mode.as_str() {
+        "full" => "full",
+        "minimal" => "minimal",
+        "off" => "off",
+        _ => "standard",
+    };
+    let conn = open_db()?;
+    set_setting_value(&conn, "motion_mode", normalized)?;
     settings_after_setting_update(&app, &conn)
 }
 
@@ -8578,10 +8631,9 @@ fn bubble_fullscreen_worker() {
                 })
                 .unwrap_or(false);
             if hide_windows {
-                if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
-                    let _ = menu.hide();
-                }
+                hide_bubble_menu_immediately(&app, "fullscreen");
                 if let Some(bubble) = app.get_webview_window("floating-bubble") {
+                    emit_bubble_window_visibility(&app, bubble.label(), false, false, "fullscreen");
                     let _ = bubble.hide();
                 }
             }
@@ -8603,6 +8655,11 @@ fn bubble_fullscreen_worker() {
                     if let Some(bubble) = app_for_main.get_webview_window("floating-bubble") {
                         let _ = bubble.show();
                         let _ = bubble.unminimize();
+                        emit_current_bubble_window_visibility(
+                            &app_for_main,
+                            &bubble,
+                            "fullscreen-restored",
+                        );
                         refresh_bubble_shapes(&app_for_main);
                     }
                 });
@@ -8653,6 +8710,209 @@ const BUBBLE_MENU_CONTENT_HEIGHT: f64 = 72.0;
 const BUBBLE_MENU_BLEED: f64 = 16.0;
 const BUBBLE_MENU_OUTER_WIDTH: f64 = BUBBLE_MENU_CONTENT_WIDTH + BUBBLE_MENU_BLEED * 2.0;
 const BUBBLE_MENU_OUTER_HEIGHT: f64 = BUBBLE_MENU_CONTENT_HEIGHT + BUBBLE_MENU_BLEED * 2.0;
+const BUBBLE_MENU_HIDE_FALLBACK_MS: u64 = 100;
+const BUBBLE_WINDOW_VISIBILITY_EVENT: &str = "orbit://bubble-window-visibility";
+const BUBBLE_MENU_HIDE_REQUEST_EVENT: &str = "orbit://bubble-menu-hide-requested";
+
+#[cfg(desktop)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BubbleWindowVisibilityPayload {
+    label: String,
+    visible: bool,
+    minimized: bool,
+    reason: String,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BubbleMenuHideRequestPayload {
+    request_id: u64,
+    reason: String,
+    has_action: bool,
+}
+
+#[cfg(desktop)]
+#[derive(Clone)]
+struct PendingBubbleMenuHide {
+    request_id: u64,
+    action: Option<String>,
+}
+
+#[cfg(desktop)]
+#[derive(Default)]
+struct BubbleMenuTransitionState {
+    next_request_id: u64,
+    pending_hide: Option<PendingBubbleMenuHide>,
+}
+
+#[cfg(desktop)]
+impl BubbleMenuTransitionState {
+    fn request_hide(&mut self, action: Option<String>) -> (PendingBubbleMenuHide, bool) {
+        if let Some(current) = self.pending_hide.as_ref() {
+            if current.action.is_some() || action.is_none() {
+                return (current.clone(), false);
+            }
+        }
+
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        let pending = PendingBubbleMenuHide {
+            request_id: self.next_request_id,
+            action,
+        };
+        self.pending_hide = Some(pending.clone());
+        (pending, true)
+    }
+
+    fn cancel_hide(&mut self, include_action: bool) -> bool {
+        let can_cancel = self
+            .pending_hide
+            .as_ref()
+            .map(|pending| include_action || pending.action.is_none())
+            .unwrap_or(false);
+        if can_cancel {
+            self.pending_hide = None;
+        }
+        can_cancel
+    }
+
+    fn take_completed_hide(&mut self, request_id: u64) -> Option<PendingBubbleMenuHide> {
+        if self.pending_hide.as_ref().map(|pending| pending.request_id) != Some(request_id) {
+            return None;
+        }
+        self.pending_hide.take()
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod bubble_menu_transition_tests {
+    use super::BubbleMenuTransitionState;
+
+    #[test]
+    fn ordinary_hide_can_be_cancelled_by_show() {
+        let mut state = BubbleMenuTransitionState::default();
+        let (pending, created) = state.request_hide(None);
+
+        assert!(created);
+        assert!(state.cancel_hide(false));
+        assert!(state.take_completed_hide(pending.request_id).is_none());
+    }
+
+    #[test]
+    fn action_hide_cannot_be_cancelled_and_completes_only_once() {
+        let mut state = BubbleMenuTransitionState::default();
+        let (pending, created) = state.request_hide(Some("search".to_string()));
+
+        assert!(created);
+        assert!(!state.cancel_hide(false));
+        let completed = state
+            .take_completed_hide(pending.request_id)
+            .expect("the action hide should complete");
+        assert_eq!(completed.action.as_deref(), Some("search"));
+        assert!(state.take_completed_hide(pending.request_id).is_none());
+    }
+
+    #[test]
+    fn action_hide_supersedes_an_ordinary_hide() {
+        let mut state = BubbleMenuTransitionState::default();
+        let (ordinary, _) = state.request_hide(None);
+        let (action, created) = state.request_hide(Some("settings".to_string()));
+
+        assert!(created);
+        assert_ne!(ordinary.request_id, action.request_id);
+        assert!(state.take_completed_hide(ordinary.request_id).is_none());
+        assert_eq!(
+            state
+                .take_completed_hide(action.request_id)
+                .and_then(|pending| pending.action),
+            Some("settings".to_string())
+        );
+    }
+}
+
+#[cfg(desktop)]
+static BUBBLE_MENU_TRANSITION_STATE: OnceLock<Mutex<BubbleMenuTransitionState>> = OnceLock::new();
+
+#[cfg(desktop)]
+fn bubble_menu_transition_state() -> &'static Mutex<BubbleMenuTransitionState> {
+    BUBBLE_MENU_TRANSITION_STATE.get_or_init(|| Mutex::new(BubbleMenuTransitionState::default()))
+}
+
+#[cfg(desktop)]
+fn emit_bubble_window_visibility(
+    app: &tauri::AppHandle,
+    label: &str,
+    visible: bool,
+    minimized: bool,
+    reason: &str,
+) {
+    let _ = app.emit(
+        BUBBLE_WINDOW_VISIBILITY_EVENT,
+        BubbleWindowVisibilityPayload {
+            label: label.to_string(),
+            visible,
+            minimized,
+            reason: reason.to_string(),
+        },
+    );
+}
+
+#[cfg(desktop)]
+fn emit_current_bubble_window_visibility(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    reason: &str,
+) {
+    emit_bubble_window_visibility(
+        app,
+        window.label(),
+        window.is_visible().unwrap_or(false),
+        window.is_minimized().unwrap_or(false),
+        reason,
+    );
+}
+
+#[cfg(desktop)]
+fn clear_pending_bubble_menu_hide(include_action: bool) -> bool {
+    bubble_menu_transition_state()
+        .lock()
+        .map(|mut state| state.cancel_hide(include_action))
+        .unwrap_or(false)
+}
+
+#[cfg(desktop)]
+fn hide_bubble_menu_immediately(app: &tauri::AppHandle, reason: &str) {
+    clear_pending_bubble_menu_hide(false);
+    if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
+        emit_bubble_window_visibility(app, menu.label(), false, false, reason);
+        let _ = menu.hide();
+    }
+}
+
+#[cfg(desktop)]
+fn complete_bubble_menu_hide_request(
+    app: &tauri::AppHandle,
+    request_id: u64,
+    reason: &str,
+) -> Result<bool, String> {
+    let pending = bubble_menu_transition_state()
+        .lock()
+        .map_err(|_| "Failed to lock the floating bubble menu transition state.".to_string())?
+        .take_completed_hide(request_id);
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+
+    if let Some(action) = pending.action {
+        complete_floating_mode_exit(app, Some(action));
+    } else if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
+        emit_bubble_window_visibility(app, menu.label(), false, false, reason);
+        menu.hide()
+            .map_err(|error| format!("Failed to hide floating bubble menu: {error}"))?;
+    }
+    Ok(true)
+}
 
 #[cfg(desktop)]
 fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
@@ -8720,6 +8980,7 @@ fn show_bubble_window(app: &tauri::AppHandle) -> Result<(), String> {
     bubble
         .unminimize()
         .map_err(|error| format!("Failed to restore floating bubble: {error}"))?;
+    emit_current_bubble_window_visibility(app, &bubble, "shown");
     refresh_bubble_shapes(app);
     schedule_bubble_shape_refresh(app);
     activate_bubble_fullscreen_watcher(app);
@@ -8745,10 +9006,13 @@ fn show_bubble_window_in_background(app: tauri::AppHandle) {
 #[cfg(desktop)]
 fn hide_bubble_window(app: &tauri::AppHandle) {
     deactivate_bubble_fullscreen_watcher();
+    clear_pending_bubble_menu_hide(false);
     if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
+        emit_bubble_window_visibility(app, menu.label(), false, false, "floating-mode-exit");
         let _ = menu.destroy();
     }
     if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        emit_bubble_window_visibility(app, bubble.label(), false, false, "floating-mode-exit");
         let _ = bubble.destroy();
     }
 }
@@ -8865,14 +9129,18 @@ fn exit_floating_mode_and_show_main(
     app: tauri::AppHandle,
     action: Option<String>,
 ) -> Result<(), String> {
-    hide_bubble_window(&app);
-    show_and_focus_main(&app);
+    complete_floating_mode_exit(&app, action);
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn complete_floating_mode_exit(app: &tauri::AppHandle, action: Option<String>) {
+    show_and_focus_main(app);
     if let Some(main) = app.get_webview_window("main") {
         if let Some(act) = action {
             let _ = main.emit("orbit://bubble-action", act);
         }
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -8890,6 +9158,21 @@ fn begin_bubble_drag(app: tauri::AppHandle) -> Result<(), String> {
 async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(desktop)]
     {
+        let action_exit_pending = bubble_menu_transition_state()
+            .lock()
+            .map(|state| {
+                state
+                    .pending_hide
+                    .as_ref()
+                    .map(|pending| pending.action.is_some())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if action_exit_pending {
+            return Ok(());
+        }
+        let cancelled_hide = clear_pending_bubble_menu_hide(false);
+
         let bubble = app.get_webview_window("floating-bubble").ok_or_else(|| {
             "Cannot open the bubble menu before the floating bubble exists.".to_string()
         })?;
@@ -8912,6 +9195,8 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
             schedule_bubble_shape_refresh(&app);
             m
         };
+        let was_visible =
+            menu.is_visible().unwrap_or(false) && !menu.is_minimized().unwrap_or(false);
 
         if let Ok(bubble_pos) = bubble.outer_position() {
             if let Ok(bubble_size) = bubble.outer_size() {
@@ -8974,19 +9259,116 @@ async fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
             .map_err(|error| format!("Failed to show bubble menu: {error}"))?;
         menu.unminimize()
             .map_err(|error| format!("Failed to restore bubble menu: {error}"))?;
+        let reason = if cancelled_hide {
+            "hide-cancelled"
+        } else if was_visible {
+            "visible"
+        } else {
+            "shown"
+        };
+        emit_current_bubble_window_visibility(&app, &menu, reason);
     }
     Ok(())
 }
 
 #[tauri::command]
-fn hide_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
+fn hide_bubble_menu_window(
+    app: tauri::AppHandle,
+    reason: Option<String>,
+    action: Option<String>,
+) -> Result<Option<u64>, String> {
     #[cfg(desktop)]
     {
-        if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
-            let _ = menu.hide();
+        let Some(menu) = app.get_webview_window("floating-bubble-menu") else {
+            if action.is_some() {
+                complete_floating_mode_exit(&app, action);
+            }
+            return Ok(None);
+        };
+        if !menu.is_visible().unwrap_or(false) || menu.is_minimized().unwrap_or(false) {
+            if action.is_some() {
+                complete_floating_mode_exit(&app, action);
+            } else {
+                emit_bubble_window_visibility(
+                    &app,
+                    menu.label(),
+                    false,
+                    menu.is_minimized().unwrap_or(false),
+                    "already-hidden",
+                );
+            }
+            return Ok(None);
         }
+
+        let reason = reason.unwrap_or_else(|| "hover-leave".to_string());
+        let (pending, created) = {
+            let mut state = bubble_menu_transition_state().lock().map_err(|_| {
+                "Failed to lock the floating bubble menu transition state.".to_string()
+            })?;
+            state.request_hide(action)
+        };
+        if !created {
+            return Ok(Some(pending.request_id));
+        }
+
+        let payload = BubbleMenuHideRequestPayload {
+            request_id: pending.request_id,
+            reason,
+            has_action: pending.action.is_some(),
+        };
+        if menu.emit(BUBBLE_MENU_HIDE_REQUEST_EVENT, payload).is_err() {
+            complete_bubble_menu_hide_request(&app, pending.request_id, "frontend-unavailable")?;
+            return Ok(Some(pending.request_id));
+        }
+
+        let request_id = pending.request_id;
+        let app_for_timeout = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(
+                BUBBLE_MENU_HIDE_FALLBACK_MS,
+            ));
+            let app_for_main = app_for_timeout.clone();
+            let _ = app_for_timeout.run_on_main_thread(move || {
+                if let Err(error) =
+                    complete_bubble_menu_hide_request(&app_for_main, request_id, "timeout")
+                {
+                    report_bubble_error(&app_for_main, &error);
+                }
+            });
+        });
+        return Ok(Some(request_id));
     }
-    Ok(())
+    #[allow(unreachable_code)]
+    Ok(None)
+}
+
+#[tauri::command]
+fn cancel_hide_bubble_menu_window(app: tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        let cancelled = clear_pending_bubble_menu_hide(false);
+        if cancelled {
+            if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
+                emit_current_bubble_window_visibility(&app, &menu, "hide-cancelled");
+            }
+        }
+        return Ok(cancelled);
+    }
+    #[allow(unreachable_code)]
+    Ok(false)
+}
+
+#[tauri::command]
+fn complete_hide_bubble_menu_window(
+    app: tauri::AppHandle,
+    request_id: u64,
+) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        return complete_bubble_menu_hide_request(&app, request_id, "frontend-complete");
+    }
+    #[allow(unreachable_code)]
+    Ok(false)
 }
 
 #[tauri::command]
@@ -9041,6 +9423,11 @@ fn set_bubble_setting(
                 {
                     let _ = bubble.show();
                     let _ = bubble.unminimize();
+                    emit_current_bubble_window_visibility(
+                        &app,
+                        &bubble,
+                        "fullscreen-avoidance-disabled",
+                    );
                 }
             }
         }
@@ -10080,6 +10467,7 @@ pub fn run() {
             set_plugin_enabled,
             set_active_theme,
             set_density,
+            set_motion_mode,
             set_close_behavior,
             set_safe_mode,
             set_auto_pinned_mode,
@@ -10106,6 +10494,8 @@ pub fn run() {
             begin_bubble_drag,
             show_bubble_menu_window,
             hide_bubble_menu_window,
+            cancel_hide_bubble_menu_window,
+            complete_hide_bubble_menu_window,
             run_script,
             check_process_running,
             check_port_open,
@@ -10154,6 +10544,8 @@ pub fn run() {
             handle_main_window_close(window, event);
             #[cfg(desktop)]
             handle_todo_window_dock(window, event);
+            #[cfg(desktop)]
+            handle_bubble_window_visibility(window, event);
         })
         .on_menu_event(|app, event| {
             if event.id() == "quit" {

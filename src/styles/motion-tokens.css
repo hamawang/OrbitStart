@@ -1,0 +1,114 @@
+:root {
+  --motion-instant: 80ms;
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-panel: 200ms;
+  --motion-emphasis: 240ms;
+  --motion-overlay: 140ms;
+  --motion-backdrop-exit: 100ms;
+  --motion-dialog: 180ms;
+  --motion-context: 100ms;
+  --motion-exit: 120ms;
+  --motion-step-exit: 100ms;
+  --motion-drawer-exit: 140ms;
+  --motion-context-exit: 70ms;
+  --motion-bubble-menu-exit: 90ms;
+  --motion-tooltip-enter: 90ms;
+  --motion-tooltip-exit: 70ms;
+  --motion-spinner-fast: 900ms;
+  --motion-spinner: 1200ms;
+  --motion-recording-cycle: 1600ms;
+  --motion-brand-cycle: 54s;
+
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  --motion-distance-xs: 2px;
+  --motion-distance-sm: 6px;
+  --motion-distance-md: 12px;
+  --motion-press-scale: 0.985;
+}
+
+:root[data-motion="minimal"] {
+  --motion-instant: 60ms;
+  --motion-fast: 80ms;
+  --motion-base: 100ms;
+  --motion-panel: 120ms;
+  --motion-emphasis: 120ms;
+  --motion-overlay: 80ms;
+  --motion-backdrop-exit: 80ms;
+  --motion-dialog: 100ms;
+  --motion-context: 70ms;
+  --motion-exit: 80ms;
+  --motion-step-exit: 80ms;
+  --motion-drawer-exit: 100ms;
+  --motion-context-exit: 60ms;
+  --motion-bubble-menu-exit: 70ms;
+  --motion-tooltip-enter: 80ms;
+  --motion-tooltip-exit: 60ms;
+  --motion-spinner-fast: 900ms;
+  --motion-spinner: 1200ms;
+  --motion-recording-cycle: 1600ms;
+  --motion-brand-cycle: 54s;
+
+  --motion-distance-xs: 0px;
+  --motion-distance-sm: 0px;
+  --motion-distance-md: 0px;
+  --motion-press-scale: 1;
+}
+
+:root[data-motion="off"] {
+  --motion-instant: 1ms;
+  --motion-fast: 1ms;
+  --motion-base: 1ms;
+  --motion-panel: 1ms;
+  --motion-emphasis: 1ms;
+  --motion-overlay: 1ms;
+  --motion-backdrop-exit: 1ms;
+  --motion-dialog: 1ms;
+  --motion-context: 1ms;
+  --motion-exit: 1ms;
+  --motion-step-exit: 1ms;
+  --motion-drawer-exit: 1ms;
+  --motion-context-exit: 1ms;
+  --motion-bubble-menu-exit: 1ms;
+  --motion-tooltip-enter: 1ms;
+  --motion-tooltip-exit: 1ms;
+  --motion-spinner-fast: 1ms;
+  --motion-spinner: 1ms;
+  --motion-recording-cycle: 1ms;
+  --motion-brand-cycle: 1ms;
+
+  --motion-distance-xs: 0px;
+  --motion-distance-sm: 0px;
+  --motion-distance-md: 0px;
+  --motion-press-scale: 1;
+}
+
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation-delay: 0ms !important;
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-delay: 0ms !important;
+  transition-duration: 1ms !important;
+}
+
+:root[data-window-state="hidden"] *,
+:root[data-window-state="hidden"] *::before,
+:root[data-window-state="hidden"] *::after {
+  animation-play-state: paused !important;
+}
+
+:root:not([data-motion="full"]) [data-motion-continuous] {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="off"]) {
+    scroll-behavior: auto;
+  }
+}

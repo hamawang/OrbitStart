@@ -7,6 +7,7 @@ import {
   resolvePluginCapabilities,
   type PluginCapabilityId
 } from "./capabilities";
+import { emitPluginStorageChanged } from "./storageEvents";
 
 type WorkerRuntimeMessage =
   | { type: "response"; requestId: string; ok: true; result?: unknown }
@@ -26,6 +27,21 @@ interface PendingRequest<T = unknown> {
   resolve: (value: T) => void;
   reject: (error: Error) => void;
   timer: number;
+}
+
+const DEFAULT_PLUGIN_EXECUTION_TIMEOUT_MS = 10_000;
+const MAX_PLUGIN_EXECUTION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
+export function normalizePluginExecutionTimeout(
+  value: unknown,
+  fallback = DEFAULT_PLUGIN_EXECUTION_TIMEOUT_MS
+) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(
+    MAX_PLUGIN_EXECUTION_TIMEOUT_MS,
+    Math.max(1000, Math.round(parsed))
+  );
 }
 
 const WORKER_BOOTSTRAP = String.raw`
@@ -71,6 +87,12 @@ function normalizeScopedId(id) {
 function sanitizeText(value, fallback) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || fallback;
+}
+
+function normalizeExecutionTimeout(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 10000;
+  return Math.min(21600000, Math.max(1000, Math.round(parsed)));
 }
 
 function hostRequest(api, payload) {
@@ -147,7 +169,8 @@ function createPluginContext() {
             subtitle: sanitizeText(command.subtitle, pluginManifest.description || "OrbitStart plugin command"),
             pluginId: pluginManifest.id,
             icon: sanitizeText(command.icon, "Puzzle"),
-            keywords: Array.isArray(command.keywords) ? command.keywords.map(String) : []
+            keywords: Array.isArray(command.keywords) ? command.keywords.map(String) : [],
+            timeoutMs: normalizeExecutionTimeout(command.timeoutMs)
           }
         });
         return () => {
@@ -294,6 +317,7 @@ async function queryProvider(payload) {
       icon: sanitizeText(source.icon, "Puzzle"),
       source: sanitizeText(source.source, pluginManifest.id),
       actionLabel: sanitizeText(source.actionLabel, "执行"),
+      timeoutMs: normalizeExecutionTimeout(source.timeoutMs),
       actionId
     };
   });
@@ -592,7 +616,11 @@ export class WorkerPluginRuntime {
       ...command,
       pluginId: this.plugin.id,
       run: async () => {
-        await this.request("run-command", { commandId: command.id }, 10000);
+        await this.request(
+          "run-command",
+          { commandId: command.id },
+          normalizePluginExecutionTimeout(command.timeoutMs)
+        );
       }
     });
     this.commandDisposers.set(command.id, dispose);
@@ -624,7 +652,11 @@ export class WorkerPluginRuntime {
         ...result,
         run: async () => {
           if (result.actionId) {
-            await this.request("run-search-action", { actionId: result.actionId }, 10000);
+            await this.request(
+              "run-search-action",
+              { actionId: result.actionId },
+              normalizePluginExecutionTimeout(result.timeoutMs)
+            );
           } else {
             this.ctx.ui.toast(result.title);
           }
@@ -737,14 +769,32 @@ export class WorkerPluginRuntime {
   }
 
   private writeScopedValue(namespace: "settings" | "storage", key: unknown, value: unknown) {
-    const storageKey = scopedStoragePrefix(this.plugin.id, namespace) + encodeStorageKey(key);
+    const encodedKey = encodeStorageKey(key);
+    const storageKey = scopedStoragePrefix(this.plugin.id, namespace) + encodedKey;
     window.localStorage.setItem(storageKey, JSON.stringify(value));
+    emitPluginStorageChanged({
+      pluginId: this.plugin.id,
+      namespace,
+      key: decodeURIComponent(encodedKey),
+      storageKey,
+      value,
+      removed: false
+    });
     return true;
   }
 
   private removeScopedValue(namespace: "settings" | "storage", key: unknown) {
-    const storageKey = scopedStoragePrefix(this.plugin.id, namespace) + encodeStorageKey(key);
+    const encodedKey = encodeStorageKey(key);
+    const storageKey = scopedStoragePrefix(this.plugin.id, namespace) + encodedKey;
     window.localStorage.removeItem(storageKey);
+    emitPluginStorageChanged({
+      pluginId: this.plugin.id,
+      namespace,
+      key: decodeURIComponent(encodedKey),
+      storageKey,
+      value: null,
+      removed: true
+    });
     return true;
   }
 

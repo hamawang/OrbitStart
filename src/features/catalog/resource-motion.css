@@ -1,0 +1,221 @@
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.group-tab-wrapper .group-tab-btn {
+  position: relative;
+  z-index: 1;
+}
+
+.resource-icon-shell {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.resource-launch-status {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  color: var(--text-primary, #f7fbff);
+  background: color-mix(in srgb, var(--surface-strong, #111827) 88%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+  pointer-events: none;
+  animation: orbit-resource-status-in var(--motion-fast) var(--ease-standard) both;
+}
+
+.resource-launch-status.is-success {
+  color: var(--success, #50d890);
+}
+
+.resource-row[data-launch-state="success"] .resource-icon-shell::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid color-mix(in srgb, var(--success, #50d890) 72%, transparent);
+  border-radius: 999px;
+  pointer-events: none;
+  animation: orbit-resource-success-ring var(--motion-emphasis) var(--ease-enter) both;
+}
+
+.resource-launch-status.is-error,
+.resource-launch-status.is-delete-error {
+  color: var(--danger, #ff7b8b);
+}
+
+.resource-row:is([data-launch-state="error"], [data-launch-state="delete-error"]) {
+  border-color: color-mix(in srgb, var(--danger, #ff7b8b) 72%, var(--line, transparent));
+}
+
+.resource-row:is([data-launch-state="error"], [data-launch-state="delete-error"]) .resource-launch {
+  animation: orbit-resource-error-nudge var(--motion-emphasis) var(--ease-standard) both;
+}
+
+.resource-launch-status.is-launching svg {
+  animation: orbit-resource-status-spin var(--motion-spinner-fast) linear infinite;
+}
+
+.resource-row.motion-resource-new > * {
+  animation: orbit-resource-enter var(--motion-base) var(--ease-enter) both;
+}
+
+.resource-row.motion-resource-deleting {
+  pointer-events: none;
+}
+
+.resource-row.motion-resource-deleting > * {
+  animation: orbit-resource-exit var(--motion-fast) var(--ease-exit) both;
+}
+
+.favorite-action.is-favorite.just-favorited img,
+.favorite-action.is-favorite.just-favorited svg {
+  animation: orbit-favorite-confirm var(--motion-base) var(--ease-enter) both;
+}
+
+.favorite-action {
+  position: relative;
+}
+
+.favorite-action.is-favorite.just-favorited::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #27d7c6) 18%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent, #27d7c6) 24%, transparent);
+  pointer-events: none;
+  animation: orbit-favorite-glow var(--motion-base) var(--ease-enter) both;
+}
+
+@keyframes orbit-resource-status-in {
+  from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes orbit-resource-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orbit-resource-success-ring {
+  from {
+    opacity: 0.78;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.22);
+  }
+}
+
+@keyframes orbit-resource-error-nudge {
+  33% {
+    transform: translateX(3px);
+  }
+  66% {
+    transform: translateX(-3px);
+  }
+}
+
+@keyframes orbit-resource-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes orbit-resource-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+@keyframes orbit-favorite-confirm {
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+@keyframes orbit-favorite-glow {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes orbit-resource-fade-enter {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes orbit-resource-fade-exit {
+  to {
+    opacity: 0;
+  }
+}
+
+html[data-motion="minimal"] .resource-row.motion-resource-new > * {
+  animation-name: orbit-resource-fade-enter;
+}
+
+html[data-motion="minimal"] .resource-row.motion-resource-deleting > * {
+  animation-name: orbit-resource-fade-exit;
+}
+
+html[data-motion="minimal"] .resource-launch-status {
+  animation-name: orbit-resource-fade-enter;
+}
+
+html[data-motion="minimal"] .resource-launch-status.is-launching svg,
+html[data-motion="minimal"] .favorite-action.is-favorite.just-favorited img,
+html[data-motion="minimal"] .favorite-action.is-favorite.just-favorited svg,
+html[data-motion="minimal"] .favorite-action.is-favorite.just-favorited::after,
+html[data-motion="minimal"] .resource-row[data-launch-state="success"] .resource-icon-shell::after,
+html[data-motion="minimal"] .resource-row:is([data-launch-state="error"], [data-launch-state="delete-error"]) .resource-launch {
+  animation: none;
+}
+
+html[data-motion="off"] .resource-launch-status,
+html[data-motion="off"] .resource-launch-status.is-launching svg,
+html[data-motion="off"] .resource-row.motion-resource-new > *,
+html[data-motion="off"] .resource-row.motion-resource-deleting > *,
+html[data-motion="off"] .favorite-action.is-favorite.just-favorited img,
+html[data-motion="off"] .favorite-action.is-favorite.just-favorited svg,
+html[data-motion="off"] .favorite-action.is-favorite.just-favorited::after,
+html[data-motion="off"] .resource-row[data-launch-state="success"] .resource-icon-shell::after,
+html[data-motion="off"] .resource-row:is([data-launch-state="error"], [data-launch-state="delete-error"]) .resource-launch {
+  animation: none;
+}
