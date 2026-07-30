@@ -2075,6 +2075,47 @@ export function MainApp({ windowLabel }: MainAppProps) {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    const handleWindowEscKey = (event: KeyboardEvent) => {
+      const minimizeKey = settings?.globalMinimizeHotkey ?? "Escape";
+      if (!minimizeKey) return;
+
+      let keyName = event.key;
+      if (keyName === " ") keyName = "Space";
+      if (keyName.length === 1) keyName = keyName.toUpperCase();
+      else keyName = keyName.charAt(0).toUpperCase() + keyName.slice(1);
+
+      const targetKey = minimizeKey.split("+").pop()?.trim() ?? "Escape";
+      if (keyName !== targetKey && event.key !== targetKey) return;
+
+      if (isRecordingHotkey || isRecordingMinimizeHotkey) {
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const isInput = activeElement && (activeElement.tagName === "INPUT" || activeElement.tagName === "TEXTAREA" || activeElement.getAttribute("contenteditable") === "true");
+
+      if (isInput) return;
+
+      if (commandBarOpen || contextMenu) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      closeWindow();
+    };
+
+    window.addEventListener("keydown", handleWindowEscKey);
+    return () => {
+      window.removeEventListener("keydown", handleWindowEscKey);
+    };
+  }, [
+    settings?.globalMinimizeHotkey,
+    isRecordingHotkey,
+    isRecordingMinimizeHotkey,
+    commandBarOpen,
+    contextMenu,
+  ]);
+
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
     const rect = contextMenuRef.current.getBoundingClientRect();
@@ -3477,10 +3518,10 @@ export function MainApp({ windowLabel }: MainAppProps) {
       if (settings) {
         setSettings({ ...settings, globalMinimizeHotkey: newHotkey });
       }
-      setToast(`全局最小化热键已更新为：${newHotkey}`);
+      setToast(`最小化快捷键已更新为：${newHotkey}`);
       setIsRecordingMinimizeHotkey(false);
     } catch (error) {
-      setToast(`注册最小化热键失败，可能被占用：${String(error)}`);
+      setToast(`更新最小化快捷键失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -3494,10 +3535,10 @@ export function MainApp({ windowLabel }: MainAppProps) {
       if (settings) {
         setSettings({ ...settings, globalMinimizeHotkey: "" });
       }
-      setToast("全局最小化热键已禁用");
+      setToast("最小化快捷键已禁用");
       setIsRecordingMinimizeHotkey(false);
     } catch (error) {
-      setToast(`清除最小化热键失败：${String(error)}`);
+      setToast(`清除最小化快捷键失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -5229,7 +5270,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
             </div>
           </label>
           <label>
-            最小化全局热键
+            最小化快捷键（置顶获焦时生效）
             <div className="hotkey-input-container">
               <input
                 ref={minimizeHotkeyInputRef}
