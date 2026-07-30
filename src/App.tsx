@@ -2077,8 +2077,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   useEffect(() => {
     const handleWindowEscKey = (event: KeyboardEvent) => {
+      if (isRecordingHotkey || isRecordingMinimizeHotkey) {
+        return;
+      }
+
+      const isEsc = event.key === "Escape";
       const minimizeKey = settings?.globalMinimizeHotkey ?? "Escape";
-      if (!minimizeKey) return;
 
       let keyName = event.key;
       if (keyName === " ") keyName = "Space";
@@ -2086,27 +2090,34 @@ export function MainApp({ windowLabel }: MainAppProps) {
       else keyName = keyName.charAt(0).toUpperCase() + keyName.slice(1);
 
       const targetKey = minimizeKey.split("+").pop()?.trim() ?? "Escape";
-      if (keyName !== targetKey && event.key !== targetKey) return;
+      const isConfiguredMinimizeKey = keyName === targetKey || event.key === targetKey;
 
-      if (isRecordingHotkey || isRecordingMinimizeHotkey) {
-        return;
-      }
+      if (!isEsc && !isConfiguredMinimizeKey) return;
+      if (commandBarOpen || contextMenu) return;
 
       const activeElement = document.activeElement;
       const isInput = activeElement && (activeElement.tagName === "INPUT" || activeElement.tagName === "TEXTAREA" || activeElement.getAttribute("contenteditable") === "true");
 
-      if (isInput) return;
-
-      if (commandBarOpen || contextMenu) return;
+      if (isInput) {
+        const inputEl = activeElement as HTMLInputElement;
+        if (inputEl.value && inputEl.value.trim().length > 0) {
+          if (inputEl.classList.contains("search-input") || inputEl.placeholder?.includes("搜索")) {
+            setQuery("");
+            event.preventDefault();
+            return;
+          }
+          return;
+        }
+      }
 
       event.preventDefault();
       event.stopPropagation();
       closeWindow();
     };
 
-    window.addEventListener("keydown", handleWindowEscKey);
+    window.addEventListener("keydown", handleWindowEscKey, true);
     return () => {
-      window.removeEventListener("keydown", handleWindowEscKey);
+      window.removeEventListener("keydown", handleWindowEscKey, true);
     };
   }, [
     settings?.globalMinimizeHotkey,
@@ -2114,6 +2125,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     isRecordingMinimizeHotkey,
     commandBarOpen,
     contextMenu,
+    query,
   ]);
 
   useLayoutEffect(() => {
@@ -3470,6 +3482,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
     event.preventDefault();
     event.stopPropagation();
 
+    if (event.key === "Enter") {
+      void saveMinimizeHotkey();
+      return;
+    }
+
     if (event.key === "Backspace") {
       setRecordedMinimizeKeys([]);
       return;
@@ -3508,6 +3525,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     const newHotkey = recordedMinimizeKeys.join("+");
     const oldHotkey = settings?.globalMinimizeHotkey ?? "Escape";
     if (newHotkey === oldHotkey) {
+      setToast(`最小化快捷键已更新为：${newHotkey}`);
       setIsRecordingMinimizeHotkey(false);
       return;
     }
