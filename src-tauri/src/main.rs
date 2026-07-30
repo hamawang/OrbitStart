@@ -6681,8 +6681,8 @@ fn update_global_minimize_hotkey(app: tauri::AppHandle, new_hotkey: String) -> R
         let shortcut_manager = app.global_shortcut();
 
         if !old_hotkey.trim().is_empty() {
-            if let Ok(old_shortcut) = normalize_hotkey(&old_hotkey)
-                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            if let Ok(old_shortcut) =
+                normalize_hotkey(&old_hotkey).parse::<tauri_plugin_global_shortcut::Shortcut>()
             {
                 let _ = shortcut_manager.unregister(old_shortcut);
             }
