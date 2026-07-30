@@ -10,7 +10,7 @@
 
 把应用、网址、文件、文件夹、脚本和工作区集中到一个围绕真实任务组织的 Windows 本地工作台。
 
-[![Version](https://img.shields.io/badge/version-0.8.4-2f81f7)](https://github.com/xuxinxi14/OrbitStart/releases)
+[![Version](https://img.shields.io/badge/version-0.8.8-2f81f7)](https://github.com/xuxinxi14/OrbitStart/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078d4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24c8db)
 ![React](https://img.shields.io/badge/React-18-61dafb)
@@ -998,8 +998,3 @@ Organize resources around real tasks.
 
 </div>
 
-## 请我喝杯咖啡？
-
-如果您愿意，可以请我喝一杯咖啡
-
-<img width="612" height="667" alt="862835ac21cc063610bd86c2e274579" src="https://github.com/user-attachments/assets/0f695fe7-d493-4691-8a1d-11f7e36fc67d" />   <img width="1372" height="1959" alt="1a576ac6bfa0998080478d7c736d0c2" src="https://github.com/user-attachments/assets/0a3b5d05-8fd5-44be-91ed-cc5396fcff80" />
