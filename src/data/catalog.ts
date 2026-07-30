@@ -944,6 +944,7 @@ export const settings: AppSettings = {
   safeMode: false,
   density: "comfortable",
   globalHotkey: "Ctrl+Alt+Space",
+  globalMinimizeHotkey: "Escape",
   closeBehavior: "tray",
   dataDir: "local-preview",
   autoPinnedMode: false,

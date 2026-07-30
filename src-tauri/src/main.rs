@@ -176,6 +176,7 @@ struct AppSettings {
     safe_mode: bool,
     density: String,
     global_hotkey: String,
+    global_minimize_hotkey: String,
     close_behavior: String,
     data_dir: String,
     auto_pinned_mode: bool,
@@ -1363,6 +1364,7 @@ fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
         ("safe_mode", "false"),
         ("density", "comfortable"),
         ("global_hotkey", "Ctrl+Alt+Space"),
+        ("global_minimize_hotkey", "Escape"),
         ("close_behavior", "tray"),
         ("auto_pinned_mode", "false"),
         ("display_mode", "simple"),
@@ -1429,6 +1431,7 @@ fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
         safe_mode: setting(conn, "safe_mode", "false")? == "true",
         density: setting(conn, "density", "comfortable")?,
         global_hotkey: setting(conn, "global_hotkey", "Ctrl+Alt+Space")?,
+        global_minimize_hotkey: setting(conn, "global_minimize_hotkey", "Escape")?,
         close_behavior: setting(conn, "close_behavior", "tray")?,
         data_dir: app_data_dir()?.to_string_lossy().to_string(),
         auto_pinned_mode: setting(conn, "auto_pinned_mode", "false")? == "true",
@@ -6667,6 +6670,49 @@ fn update_global_hotkey(app: tauri::AppHandle, new_hotkey: String) -> Result<(),
 }
 
 #[tauri::command]
+fn update_global_minimize_hotkey(app: tauri::AppHandle, new_hotkey: String) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let old_hotkey = setting(&conn, "global_minimize_hotkey", "Escape")?;
+
+        let shortcut_manager = app.global_shortcut();
+
+        if !old_hotkey.trim().is_empty() {
+            if let Ok(old_shortcut) = normalize_hotkey(&old_hotkey)
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            {
+                let _ = shortcut_manager.unregister(old_shortcut);
+            }
+        }
+
+        let trimmed_new = new_hotkey.trim();
+        if !trimmed_new.is_empty() {
+            let new_shortcut = normalize_hotkey(trimmed_new)
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                .map_err(|e| format!("解析最小化快捷键失败，格式可能不正确: {}", e))?;
+
+            shortcut_manager
+                .register(new_shortcut)
+                .map_err(|e| format!("最小化快捷键冲突或注册失败: {}", e))?;
+        }
+
+        set_setting_value(&conn, "global_minimize_hotkey", trimmed_new)?;
+        cache_settings_from_connection(&app, &conn)?;
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let conn = open_db().map_err(|e| e.to_string())?;
+        set_setting_value(&conn, "global_minimize_hotkey", new_hotkey.trim())?;
+        cache_settings_from_connection(&app, &conn)?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn preview_scan_shortcuts() -> Result<Vec<OrbitItemInput>, String> {
     tauri::async_runtime::spawn_blocking(scan_shortcuts_native_cached)
         .await
@@ -9546,6 +9592,21 @@ fn handle_global_shortcut_press(
         }
     }
 
+    let minimize_hotkey_str = cached_settings(app)
+        .map(|settings| settings.global_minimize_hotkey)
+        .unwrap_or_else(|_| "Escape".to_string());
+
+    if !minimize_hotkey_str.trim().is_empty() {
+        if let Ok(minimize_sh) =
+            normalize_hotkey(&minimize_hotkey_str).parse::<tauri_plugin_global_shortcut::Shortcut>()
+        {
+            if shortcut == &minimize_sh {
+                let _ = hide_main_and_maybe_show_bubble(app);
+                return;
+            }
+        }
+    }
+
     if let Ok(conn) = open_db() {
         if let Ok(custom_hotkeys) = get_custom_hotkeys(&conn) {
             for (group_id, hotkey_str) in custom_hotkeys {
@@ -9665,6 +9726,22 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
                     "Failed to register initial global shortcut '{}': {}",
                     hotkey_str, e
                 );
+            }
+        }
+
+        let minimize_hotkey_str = cached_settings(app.handle())
+            .map(|settings| settings.global_minimize_hotkey)
+            .unwrap_or_else(|_| "Escape".to_string());
+        if !minimize_hotkey_str.trim().is_empty() {
+            if let Ok(min_shortcut) = normalize_hotkey(&minimize_hotkey_str)
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            {
+                if let Err(e) = app.global_shortcut().register(min_shortcut) {
+                    eprintln!(
+                        "Failed to register initial global minimize shortcut '{}': {}",
+                        minimize_hotkey_str, e
+                    );
+                }
             }
         }
 
@@ -10460,6 +10537,7 @@ pub fn run() {
             scan_shortcuts,
             scan_browser_bookmarks,
             update_global_hotkey,
+            update_global_minimize_hotkey,
             preview_scan_shortcuts,
             preview_scan_browser_bookmarks,
             import_scanned_items,

@@ -209,6 +209,7 @@ import {
   scanObsidianVault,
   scanShortcuts,
   updateGlobalHotkey,
+  updateGlobalMinimizeHotkey,
   previewScanShortcuts,
   previewScanBrowserBookmarks,
   importScannedItems,
@@ -793,6 +794,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [commandBarSelectedIndex, setCommandBarSelectedIndex] = useState(0);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
   const [recordedKeys, setRecordedKeys] = useState<string[]>([]);
+  const [isRecordingMinimizeHotkey, setIsRecordingMinimizeHotkey] = useState(false);
+  const [recordedMinimizeKeys, setRecordedMinimizeKeys] = useState<string[]>([]);
+  const minimizeHotkeyInputRef = useRef<HTMLInputElement>(null);
   const [tripCounts, setTripCounts] = useState<Record<string, number>>({});
   const [tripPanelItem, setTripPanelItem] = useState<OrbitItem | null>(null);
   const [tripPanelHighlightId, setTripPanelHighlightId] = useState<string | null>(null);
@@ -3420,6 +3424,85 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
+  const handleMinimizeHotkeyKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isRecordingMinimizeHotkey) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Backspace") {
+      setRecordedMinimizeKeys([]);
+      return;
+    }
+
+    const keys: string[] = [];
+    if (event.ctrlKey) keys.push("Ctrl");
+    if (event.altKey) keys.push("Alt");
+    if (event.shiftKey) keys.push("Shift");
+    if (event.metaKey) keys.push("Win");
+    
+    const key = event.key;
+    const isModifierOnly = ["Control", "Alt", "Shift", "Meta", "OS"].includes(key);
+
+    if (!isModifierOnly) {
+      let keyName = key;
+      if (keyName === " ") keyName = "Space";
+      if (keyName.length === 1) {
+        keyName = keyName.toUpperCase();
+      } else {
+        keyName = keyName.charAt(0).toUpperCase() + keyName.slice(1);
+      }
+      keys.push(keyName);
+    }
+
+    const finalKeys = keys.slice(0, 4);
+    setRecordedMinimizeKeys(finalKeys);
+  };
+
+  async function saveMinimizeHotkey() {
+    const hasMainKey = recordedMinimizeKeys.length > 0 && !["Ctrl", "Alt", "Shift", "Win"].includes(recordedMinimizeKeys[recordedMinimizeKeys.length - 1]);
+    if (!hasMainKey) {
+      setToast("快捷键必须包含一个主键（如 Escape、Space 或按键组合）");
+      return;
+    }
+    const newHotkey = recordedMinimizeKeys.join("+");
+    const oldHotkey = settings?.globalMinimizeHotkey ?? "Escape";
+    if (newHotkey === oldHotkey) {
+      setIsRecordingMinimizeHotkey(false);
+      return;
+    }
+    
+    setBusy(true);
+    try {
+      await updateGlobalMinimizeHotkey(oldHotkey, newHotkey);
+      if (settings) {
+        setSettings({ ...settings, globalMinimizeHotkey: newHotkey });
+      }
+      setToast(`全局最小化热键已更新为：${newHotkey}`);
+      setIsRecordingMinimizeHotkey(false);
+    } catch (error) {
+      setToast(`注册最小化热键失败，可能被占用：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearMinimizeHotkey() {
+    const oldHotkey = settings?.globalMinimizeHotkey ?? "Escape";
+    setBusy(true);
+    try {
+      await updateGlobalMinimizeHotkey(oldHotkey, "");
+      if (settings) {
+        setSettings({ ...settings, globalMinimizeHotkey: "" });
+      }
+      setToast("全局最小化热键已禁用");
+      setIsRecordingMinimizeHotkey(false);
+    } catch (error) {
+      setToast(`清除最小化热键失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runNativeItemScan(kind: "shortcuts" | "bookmarks", onClose?: () => void) {
     setBusy(true);
     setToast(kind === "shortcuts" ? "正在扫描本地程序..." : "正在读取浏览器书签...");
@@ -5118,7 +5201,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         <p>控制界面密度、全局热键与插件安全策略。</p>
         <div className="setting-list">
           <label>
-            全局热键
+            唤出全局热键
             <div className="hotkey-input-container">
               <input
                 ref={hotkeyInputRef}
@@ -5142,6 +5225,41 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <button type="button" className="action-btn" onClick={() => { setIsRecordingHotkey(true); setRecordedKeys([]); setTimeout(() => hotkeyInputRef.current?.focus(), 50); }}>
                   自定义
                 </button>
+              )}
+            </div>
+          </label>
+          <label>
+            最小化全局热键
+            <div className="hotkey-input-container">
+              <input
+                ref={minimizeHotkeyInputRef}
+                value={isRecordingMinimizeHotkey ? (recordedMinimizeKeys.join("+") || "请按下快捷键...") : (settings?.globalMinimizeHotkey ?? "Escape")}
+                readOnly
+                onKeyDown={handleMinimizeHotkeyKeyDown}
+                className={isRecordingMinimizeHotkey ? "recording" : ""}
+                placeholder="请按下快捷键..."
+                style={{ cursor: isRecordingMinimizeHotkey ? "pointer" : "default" }}
+              />
+              {isRecordingMinimizeHotkey ? (
+                <>
+                  <button type="button" className="action-btn confirm-btn" onClick={saveMinimizeHotkey} disabled={busy}>
+                    确定
+                  </button>
+                  <button type="button" className="action-btn cancel-btn" onClick={() => { setIsRecordingMinimizeHotkey(false); setRecordedMinimizeKeys([]); }} disabled={busy}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="action-btn" onClick={() => { setIsRecordingMinimizeHotkey(true); setRecordedMinimizeKeys([]); setTimeout(() => minimizeHotkeyInputRef.current?.focus(), 50); }}>
+                    自定义
+                  </button>
+                  {(settings?.globalMinimizeHotkey ?? "Escape") !== "" && (
+                    <button type="button" className="action-btn cancel-btn" onClick={clearMinimizeHotkey} disabled={busy}>
+                      禁用
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </label>

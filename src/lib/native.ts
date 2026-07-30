@@ -1104,6 +1104,21 @@ export async function updateGlobalHotkey(oldHotkey: string, newHotkey: string): 
   }
 }
 
+export async function updateGlobalMinimizeHotkey(oldHotkey: string, newHotkey: string): Promise<void> {
+  try {
+    await invokeNative<void>("update_global_minimize_hotkey", { newHotkey });
+  } catch (e) {
+    if (hasNativeBridge()) throw e;
+    console.warn("Failed to update global minimize hotkey natively, fallback to browser state update", e);
+    const snapshot = readBrowserSnapshot();
+    const next = {
+      ...snapshot,
+      settings: { ...snapshot.settings, globalMinimizeHotkey: newHotkey }
+    };
+    writeBrowserSnapshot(next);
+  }
+}
+
 export async function previewScanShortcuts(): Promise<OrbitItemInput[]> {
   try {
     return await invokeNative<OrbitItemInput[]>("preview_scan_shortcuts");

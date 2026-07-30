@@ -260,6 +260,7 @@ export interface AppSettings {
   safeMode: boolean;
   density: "comfortable" | "compact" | string;
   globalHotkey: string;
+  globalMinimizeHotkey?: string;
   closeBehavior?: "tray" | "exit" | string;
   dataDir: string;
   autoPinnedMode: boolean;
