@@ -5884,15 +5884,16 @@ export function MainApp({ windowLabel }: MainAppProps) {
           : `正在下载更新：${updateProgress}%`;
       return (
         <section
-          className="palette-backdrop centered-backdrop"
+          className="palette-backdrop centered-backdrop updater-backdrop"
           role="dialog"
           aria-modal="true"
           data-testid="updater-dialog"
+          style={{ zIndex: 12000 }}
           onClick={(event) => {
             if (!isInstalling && event.target === event.currentTarget) setDialog(null);
           }}
         >
-          <div className="modal-panel dialog-panel">
+          <div className="modal-panel dialog-panel updater-dialog-panel">
             <div className="modal-head">
               <div>
                 <p className="eyebrow">Software update</p>
@@ -5902,12 +5903,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <X size={18} />
               </button>
             </div>
-            <div className="dialog-body">
-              <p>确认后将下载更新并在安装完成后自动重新启动 OrbitStart。</p>
+            <div className="dialog-body updater-dialog-body">
+              <p className="updater-intro-text">确认后将下载更新并在安装完成后自动重新启动 OrbitStart。</p>
               {dialog.body && (
-                <p className="update-release-notes" data-testid="updater-release-notes">
+                <div className="update-release-notes" data-testid="updater-release-notes">
                   {dialog.body}
-                </p>
+                </div>
               )}
               {isInstalling && (
                 <div className="update-progress" data-testid="updater-progress" aria-live="polite">
@@ -7101,13 +7102,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <section className="aux-workspace">
             {auxPanel === "about" ? renderAbout() : renderSettings()}
           </section>
-          <AnimatePresence initial={false}>
-            {dialog && (
-              <MotionPresenceLayer key={`dialog-${dialog.type}`}>
-                {renderAppDialog()}
-              </MotionPresenceLayer>
-            )}
-          </AnimatePresence>
+
           <AnimatePresence initial={false}>
             {selectedPlugin && (
               <MotionPresenceLayer key={`plugin-${selectedPlugin.id}`}>
@@ -7449,13 +7444,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
 
 
-      <AnimatePresence initial={false}>
-        {dialog && (
-          <MotionPresenceLayer key={`dialog-${dialog.type}`}>
-            {renderAppDialog()}
-          </MotionPresenceLayer>
-        )}
-      </AnimatePresence>
+
 
       <AnimatePresence initial={false}>
         {tripsFeatureEnabled && tripPanelItem && (
@@ -7862,8 +7851,16 @@ export function MainApp({ windowLabel }: MainAppProps) {
       )}
       </AnimatePresence>
       {createPortal(
-        <AnimatePresence initial={false}>
-        {subTagSelectModal?.isOpen && (
+        <>
+          <AnimatePresence initial={false}>
+            {dialog && (
+              <MotionPresenceLayer key={`dialog-${dialog.type}`}>
+                {renderAppDialog()}
+              </MotionPresenceLayer>
+            )}
+          </AnimatePresence>
+          <AnimatePresence initial={false}>
+            {subTagSelectModal?.isOpen && (
         <MotionPresenceLayer key="subtag-selector">
         <section
           className="dialog-backdrop"
@@ -7990,7 +7987,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </section>
         </MotionPresenceLayer>
         )}
-        </AnimatePresence>,
+        </AnimatePresence>
+        </>,
         document.body
       )}
       <MotionDialog
