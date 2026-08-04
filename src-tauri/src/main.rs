@@ -5758,16 +5758,14 @@ fn create_custom_group(
 #[tauri::command]
 fn delete_group(app: tauri::AppHandle, id: String) -> Result<Vec<OrbitGroup>, String> {
     let conn = open_db()?;
-    let custom: i64 = conn
+
+    let remaining_group_id: Option<String> = conn
         .query_row(
-            "SELECT custom FROM groups WHERE id = ?1",
+            "SELECT id FROM groups WHERE id != ?1 ORDER BY sort_order ASC LIMIT 1",
             params![&id],
             |row| row.get(0),
         )
-        .map_err(|error| format!("Failed to check group: {error}"))?;
-    if custom == 0 {
-        return Err("Built-in groups cannot be deleted".to_string());
-    }
+        .ok();
 
     let mut stmt = conn
         .prepare("SELECT id, kind, group_id FROM items")
@@ -5794,7 +5792,11 @@ fn delete_group(app: tauri::AppHandle, id: String) -> Result<Vec<OrbitGroup>, St
             .filter(|group_id| group_id != &id)
             .collect::<Vec<_>>();
         if next_groups.is_empty() {
-            next_groups.push(default_group_for_kind(&kind).to_string());
+            if let Some(ref rem) = remaining_group_id {
+                next_groups.push(rem.clone());
+            } else {
+                next_groups.push(default_group_for_kind(&kind).to_string());
+            }
         }
         conn.execute(
             "UPDATE items SET group_id = ?2, updated_at = ?3 WHERE id = ?1",

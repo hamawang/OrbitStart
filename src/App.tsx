@@ -3167,8 +3167,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   async function removeGroup(groupId: string) {
     const group = groups.find((candidate) => candidate.id === groupId);
-    if (!group || !group.custom) {
-      setToast("默认分组不可删除");
+    if (!group) {
       return;
     }
     const affected = items.filter((item) => itemHasGroup(item, groupId)).length;
@@ -6691,18 +6690,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
               )}
 
               <span className="context-separator" />
-              {targetGroup.custom ? (
-                <button
-                  type="button"
-                  className="context-danger"
-                  onClick={() => { void removeGroup(targetGroup.id); setContextMenu(null); }}
-                  disabled={busy}
-                >
-                  {`删除标签“${targetGroup.title}”`}
-                </button>
-              ) : (
-                <button type="button" disabled>{"内置标签不可删除"}</button>
-              )}
+              <button
+                type="button"
+                className="context-danger"
+                onClick={() => { void removeGroup(targetGroup.id); setContextMenu(null); }}
+                disabled={busy}
+              >
+                {`删除标签“${targetGroup.title}”`}
+              </button>
             </>
           );
         })()}
