@@ -813,6 +813,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [todoPanelTasks, setTodoPanelTasks] = useState<ObsidianTask[]>([]);
   const [todoPanelPinned, setTodoPanelPinned] = useState(false);
   const [todoPanelLoading, setTodoPanelLoading] = useState(false);
+  const [updaterError, setUpdaterError] = useState<string | null>(null);
 
   const [workbenchStatisticsOrder, setWorkbenchStatisticsOrder] = useState<string[]>(() => {
     try {
@@ -1197,6 +1198,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {
+        setUpdaterError(null);
         setUpdateCheckMessage(`发现新版本 v${update.version}，请确认下载并安装。`);
         setDialog({
           type: "app-update",
@@ -1224,6 +1226,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
   };
 
   const startAppUpdate = async (pendingUpdate: any) => {
+    setUpdaterError(null);
+    if (!pendingUpdate || typeof pendingUpdate.downloadAndInstall !== "function") {
+      const err = "未获取到有效的自动更新包句柄。您可以点击下方按钮前往 GitHub Releases 页面手动下载最新安装包。";
+      setUpdaterError(err);
+      setToast(err);
+      return;
+    }
     setUpdateProgress(0);
     setUpdatingState("downloading");
     try {
@@ -1258,7 +1267,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
       }, 1500);
     } catch (err) {
       console.error("Failed to download and install update:", err);
-      setToast(`下载更新失败：${String(err)}`);
+      const errMsg = String(err);
+      const is404 = errMsg.includes("404") || errMsg.includes("not found") || errMsg.includes("Not Found");
+      const userFriendlyError = is404
+        ? "GitHub Releases 远程下载资源尚未发布就绪 (HTTP 404)。请稍等片刻重试，或点击下方按钮手动下载安装包。"
+        : `下载更新失败：${errMsg}。网络连接可能受限，建议点击下方按钮前往 GitHub 手动下载。`;
+      setUpdaterError(userFriendlyError);
+      setToast(userFriendlyError);
       setUpdatingState("idle");
     }
   };
@@ -5907,6 +5922,19 @@ export function MainApp({ windowLabel }: MainAppProps) {
               {dialog.body && (
                 <div className="update-release-notes" data-testid="updater-release-notes">
                   {dialog.body}
+                </div>
+              )}
+              {updaterError && (
+                <div className="update-error-banner" style={{ background: "rgba(239, 68, 68, 0.12)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", padding: "10px 14px", color: "#f87171", fontSize: "13px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <span>{updaterError}</span>
+                  <button
+                    type="button"
+                    className="secondary-action compact-action"
+                    style={{ alignSelf: "flex-start" }}
+                    onClick={() => void launchTarget("https://github.com/xuxinxi14/OrbitStart/releases")}
+                  >
+                    前往 GitHub 手动下载
+                  </button>
                 </div>
               )}
               {isInstalling && (
