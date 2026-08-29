@@ -185,6 +185,7 @@ import {
   createItemsFromPaths,
   createGroup,
   createCustomGroup,
+  renameGroup,
   deleteGroup,
   createPluginTemplate,
   deleteItem,
@@ -312,6 +313,7 @@ type TodoPanelPayload = {
 };
 type AppDialogState =
   | { type: "group"; value: string }
+  | { type: "group-rename"; group: OrbitGroup; value: string }
   | { type: "delete-item"; item: OrbitItem }
   | { type: "batch-delete" }
   | { type: "batch-move"; groupId: string }
@@ -858,6 +860,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const contextEditTargetRef = useRef<HTMLElement | null>(null);
   const lastPointerRef = useRef({ x: 24, y: 24 });
   const dropInProgressRef = useRef(false);
+  const editorRef = useRef<EditorState | null>(null);
+  editorRef.current = editor;
   const launchingResourceIdsRef = useRef(new Set<string>());
   const resourceMotionTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const resourceDeletionInFlightRef = useRef(new Set<string>());
@@ -2184,6 +2188,25 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
         setDragActive(false);
         setExternalDropGroupId(null);
+        if (editorRef.current && payload.paths.length > 0) {
+          const path = payload.paths[0];
+          const fileName = path.split(/[/\\]/).pop() || path;
+          const title = fileName.replace(/\.[^/.]+$/, "") || fileName;
+          setEditor((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              input: {
+                ...current.input,
+                target: path,
+                title: current.input.title.trim() ? current.input.title : title,
+                subtitle: current.input.subtitle.trim() ? current.input.subtitle : path,
+              }
+            };
+          });
+          setToast(`已通过拖拽填入文件路径：${fileName}`);
+          return;
+        }
         void createDroppedResources(payload.paths, destinationGroup);
       }).then((unlisten) => {
         unlisteners.push(unlisten);
@@ -2227,6 +2250,25 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setExternalDropGroupId(null);
       const paths = droppedPathsFromBrowserEvent(event);
       if (paths.length > 0) {
+        if (editorRef.current) {
+          const path = paths[0];
+          const fileName = path.split(/[/\\]/).pop() || path;
+          const title = fileName.replace(/\.[^/.]+$/, "") || fileName;
+          setEditor((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              input: {
+                ...current.input,
+                target: path,
+                title: current.input.title.trim() ? current.input.title : title,
+                subtitle: current.input.subtitle.trim() ? current.input.subtitle : path,
+              }
+            };
+          });
+          setToast(`已通过拖拽填入文件路径：${fileName}`);
+          return;
+        }
         void createDroppedResources(paths, destinationGroup);
       } else if (!isTauriRuntime()) {
         setToast("浏览器预览无法读取本地路径，请在桌面版中拖拽文件");
@@ -3175,6 +3217,30 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setDialog(null);
     } catch (error) {
       setToast(`创建标签失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmRenameGroup(groupId: string, newTitle: string) {
+    const cleanTitle = newTitle.trim();
+    if (!cleanTitle) {
+      setToast("标签名称不能为空");
+      return;
+    }
+    const targetGroup = groups.find((g) => g.id === groupId);
+    if (targetGroup && cleanTitle === targetGroup.title) {
+      setDialog(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      const nextGroups = await renameGroup(groupId, cleanTitle);
+      setGroups(nextGroups);
+      setToast(`已重命名标签为「${cleanTitle}」`);
+      setDialog(null);
+    } catch (error) {
+      setToast(`重命名标签失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -6126,6 +6192,47 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
+    if (dialog.type === "group-rename") {
+      return (
+        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <form
+            className="modal-panel dialog-panel"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmRenameGroup(dialog.group.id, dialog.value);
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Rename tag</p>
+                <h2>重命名标签</h2>
+              </div>
+              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="dialog-body">
+              <label>
+                标签名称
+                <input
+                  autoFocus
+                  value={dialog.value}
+                  onChange={(event) =>
+                    setDialog((current) => (current?.type === "group-rename" ? { ...current, value: event.target.value } : current))
+                  }
+                  placeholder="例如：开发工具"
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
+              <button type="submit" className="primary-action" disabled={busy}>保存</button>
+            </div>
+          </form>
+        </section>
+      );
+    }
+
     if (dialog.type === "delete-item") {
       return (
         <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
@@ -6718,6 +6825,15 @@ export function MainApp({ windowLabel }: MainAppProps) {
               )}
 
               <span className="context-separator" />
+              <button
+                type="button"
+                onClick={() => {
+                  setDialog({ type: "group-rename", group: targetGroup, value: targetGroup.title });
+                  setContextMenu(null);
+                }}
+              >
+                {"重命名标签"}
+              </button>
               <button
                 type="button"
                 className="context-danger"

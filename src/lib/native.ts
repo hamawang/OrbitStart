@@ -444,6 +444,23 @@ export async function deleteGroup(id: string): Promise<Phase0Snapshot["groups"]>
   }
 }
 
+export async function renameGroup(id: string, newTitle: string): Promise<Phase0Snapshot["groups"]> {
+  const cleanTitle = newTitle.trim();
+  try {
+    return await invokeNative<Phase0Snapshot["groups"]>("rename_group", { id, newTitle: cleanTitle });
+  } catch (error) {
+    if (hasNativeBridge()) throw error;
+    const snapshot = readBrowserSnapshot();
+    const nextGroups = snapshot.groups.map((group) =>
+      group.id === id
+        ? { ...group, title: cleanTitle, description: `自定义标签：${cleanTitle}` }
+        : group
+    );
+    writeBrowserSnapshot({ ...snapshot, groups: nextGroups });
+    return nextGroups;
+  }
+}
+
 export async function updateItem(item: OrbitItem): Promise<OrbitItem> {
   try {
     return await invokeNative<OrbitItem>("update_item", { item });

@@ -1,4 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+const appVersion = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+).version as string;
 
 test.use({
   storageState: {
@@ -309,10 +314,10 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     expect(storedGroup).toBe('apps');
   });
 
-  test('should show version 0.8.6 on the about page', async ({ page }) => {
+  test('should show the package version on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.8.6');
+    await expect(page.locator('.about-card')).toContainText(appVersion);
   });
 
   test('should expose a manual update check with browser-environment feedback', async ({ page }) => {

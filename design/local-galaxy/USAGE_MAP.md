@@ -20,8 +20,8 @@ Updated: 2026-06-14
 | `favorite-star-20.png` | 收藏激活状态图标 | 仅 favorite=true 的资源卡片收藏按钮 | 否 | 1 | `ResourceCard` / `.favorite-action.is-favorite img` |
 | `favorite-star-24.png` | favorite 高分辨率备用 | 高 DPI 或后续详情页收藏状态备用 | 否 | 1 | asset map，暂未正式 UI 调用 |
 | `日志页列表背景纹理.png` | 日志面板内部纹理 | 仅 `.logs-panel::before`，不铺满页面，不作为行背景 | 已移动到面板伪元素 | 0.10 | `LogsPanel` / `.logs-panel::before` |
-| `搜索框高光边缘.png` | 搜索框交互效果 | 只用于 search focus | 否 | 0.48 | `.search-shell:focus-within::before` |
-| `分类标签激活光.png` | active tab 交互效果 | 只用于 active tab | 否 | 0.38 | `.group-tabs button.selected::before` |
+| `搜索框高光边缘.png` | 已停用 | 保留素材但不接入；搜索 focus 只由复合 `.search-shell` 绘制 | 是，已停用图片伪元素 | disabled | asset map only |
+| `分类标签激活光.png` | 已停用 | 保留素材但不接入；active tab 只使用 CSS 边框与背景 | 是，已停用图片伪元素 | disabled | asset map only |
 | `青绿色柔光.png` | 主按钮 hover 背光 | 只用于主按钮 hover/focus 类交互 | 否 | 0.28 on hover | `.primary-action:hover::after` |
 | `暗金柔光.png` | Logo 区弱背光 | 低强度 Logo 区辅助光 | 否 | 0.16 | `.brand-mark::before` |
 | `星形指南针装饰.png` | Logo 区弱装饰 | 低 opacity 小装饰，不压内容 | 否 | 0.18 | `.brand-mark::after` |
@@ -37,4 +37,5 @@ Updated: 2026-06-14
 - Real app icons remain rendered above the shell through the `Icon` component.
 - Favorite image icon only appears when `item.favorite === true`; inactive state still uses the Lucide line star.
 - Log texture only appears on `.logs-panel::before`.
+- Search and selected-tab image overlays stay disabled so they cannot create duplicate or misaligned frames.
 - Main panel/search/card borders remain CSS borders and shadows; image borders are not used as primary UI borders.

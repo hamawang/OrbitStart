@@ -757,16 +757,31 @@ fn create_pre_migration_backup(
 }
 
 fn bootstrap_database_data(conn: &Connection) -> Result<(), String> {
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
-        .map_err(|error| format!("Failed to count items: {error}"))?;
+    let items_already_seeded: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'items_seeded'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
 
-    if count == 0 {
-        let mut seeds = seed_items();
-        seeds.reverse();
-        for item in seeds {
-            insert_item(conn, &item)?;
+    if !items_already_seeded {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .map_err(|error| format!("Failed to count items: {error}"))?;
+
+        if count == 0 {
+            let mut seeds = seed_items();
+            seeds.reverse();
+            for item in seeds {
+                insert_item(conn, &item)?;
+            }
         }
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('items_seeded', 'true')",
+            [],
+        );
     }
 
     seed_groups(conn)?;
@@ -1631,6 +1646,31 @@ fn default_groups() -> Vec<OrbitGroup> {
 }
 
 fn seed_groups(conn: &Connection) -> Result<(), String> {
+    let already_seeded: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'groups_seeded'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+
+    if already_seeded {
+        return Ok(());
+    }
+
+    let group_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    if group_count > 0 {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('groups_seeded', 'true')",
+            [],
+        );
+        return Ok(());
+    }
+
     let now = now_string();
     for (index, group) in default_groups().iter().enumerate() {
         conn.execute(
@@ -1639,6 +1679,13 @@ fn seed_groups(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|error| format!("Failed to seed group: {error}"))?;
     }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('groups_seeded', 'true')",
+        [],
+    )
+    .map_err(|error| format!("Failed to record groups_seeded setting: {error}"))?;
+
     Ok(())
 }
 
@@ -2940,6 +2987,77 @@ fn pick_file_path_dialog(
         .dialog()
         .file()
         .add_filter(title, extensions)
+        .blocking_pick_file()
+        .map(|path| path.to_string());
+    Ok(picked)
+}
+
+fn pick_resource_file_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter(
+            "常用资源 (程序/文档/脚本/快捷方式)",
+            &[
+                "exe",
+                "lnk",
+                "msi",
+                "appref-ms",
+                "cmd",
+                "bat",
+                "ps1",
+                "py",
+                "js",
+                "ts",
+                "vbs",
+                "ahk",
+                "sh",
+                "pdf",
+                "doc",
+                "docx",
+                "xls",
+                "xlsx",
+                "ppt",
+                "pptx",
+                "txt",
+                "md",
+                "csv",
+                "json",
+                "zip",
+                "rar",
+                "7z",
+                "epub",
+                "html",
+                "htm",
+            ],
+        )
+        .add_filter(
+            "文档与电子书 (*.pdf;*.docx;*.doc;*.xlsx;*.pptx;*.txt;*.md...)",
+            &[
+                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json",
+                "epub", "html", "htm",
+            ],
+        )
+        .add_filter(
+            "应用程序与脚本 (*.exe;*.lnk;*.msi;*.cmd;*.bat;*.ps1...)",
+            &[
+                "exe",
+                "lnk",
+                "msi",
+                "appref-ms",
+                "cmd",
+                "bat",
+                "ps1",
+                "py",
+                "js",
+                "ts",
+                "vbs",
+                "ahk",
+                "sh",
+            ],
+        )
+        .add_filter("所有文件 (*.*)", &["*"])
         .blocking_pick_file()
         .map(|path| path.to_string());
     Ok(picked)
@@ -5680,24 +5798,7 @@ fn pick_resource_input(
     let picked = if mode == "folder" {
         pick_folder_path_dialog(&app)?
     } else {
-        pick_file_path_dialog(
-            &app,
-            "Applications, shortcuts, scripts, files",
-            &[
-                "exe",
-                "lnk",
-                "msi",
-                "appref-ms",
-                "cmd",
-                "bat",
-                "ps1",
-                "py",
-                "js",
-                "ts",
-                "vbs",
-                "ahk",
-            ],
-        )?
+        pick_resource_file_dialog(&app)?
     };
     Ok(picked.map(|path| item_input_from_dropped_path(&path)))
 }
@@ -5807,6 +5908,26 @@ fn delete_group(app: tauri::AppHandle, id: String) -> Result<Vec<OrbitGroup>, St
 
     conn.execute("DELETE FROM groups WHERE id = ?1", params![&id])
         .map_err(|error| format!("Failed to delete group: {error}"))?;
+    let _ = app.emit("orbit://refresh-resources", ());
+    all_groups(&conn)
+}
+
+#[tauri::command]
+fn rename_group(
+    app: tauri::AppHandle,
+    id: String,
+    new_title: String,
+) -> Result<Vec<OrbitGroup>, String> {
+    let new_title = new_title.trim();
+    if new_title.is_empty() {
+        return Err("Group title cannot be empty".to_string());
+    }
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE groups SET title = ?1, description = ?2 WHERE id = ?3",
+        params![new_title, format!("标签：{new_title}"), &id],
+    )
+    .map_err(|error| format!("Failed to rename group: {error}"))?;
     let _ = app.emit("orbit://refresh-resources", ());
     all_groups(&conn)
 }
@@ -5972,6 +6093,15 @@ extern "system" {
         lpDirectory: *const u16,
         nShowCmd: i32,
     ) -> *mut std::ffi::c_void;
+
+    fn ILCreateFromPathW(pszPath: *const u16) -> *mut std::ffi::c_void;
+    fn ILFree(pidl: *mut std::ffi::c_void);
+    fn SHOpenFolderAndSelectItems(
+        pidlFolder: *mut std::ffi::c_void,
+        cidl: u32,
+        apidl: *const *mut std::ffi::c_void,
+        dwFlags: u32,
+    ) -> i32;
 }
 
 #[cfg(target_os = "windows")]
@@ -6025,11 +6155,7 @@ fn explorer_open_path(path: &Path) -> Result<(), String> {
     if path_str.starts_with(r"\\?\") {
         path_str = path_str[4..].to_string();
     }
-    ProcessCommand::new("explorer.exe")
-        .arg(&path_str)
-        .spawn()
-        .map_err(|error| format!("Failed to open folder: {error}"))?;
-    Ok(())
+    win_shell_execute(&path_str, None, None)
 }
 
 #[cfg(target_os = "windows")]
@@ -6039,9 +6165,23 @@ fn explorer_reveal_path(path: &Path) -> Result<(), String> {
     if path_str.starts_with(r"\\?\") {
         path_str = path_str[4..].to_string();
     }
-    ProcessCommand::new("explorer.exe")
-        .arg(format!("/select,{}", path_str))
-        .spawn()
+
+    let wide_path = to_wide_chars(&path_str);
+    unsafe {
+        let pidl = ILCreateFromPathW(wide_path.as_ptr());
+        if !pidl.is_null() {
+            let hr = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
+            ILFree(pidl);
+            if hr >= 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    use std::os::windows::process::CommandExt;
+    let mut cmd = ProcessCommand::new("explorer.exe");
+    cmd.raw_arg(format!("/select,\"{}\"", path_str));
+    cmd.spawn()
         .map_err(|error| format!("Failed to reveal target: {error}"))?;
     Ok(())
 }
@@ -10441,6 +10581,7 @@ pub fn run() {
             pick_icon_image,
             create_group,
             create_custom_group,
+            rename_group,
             delete_group,
             list_trips,
             create_trip,

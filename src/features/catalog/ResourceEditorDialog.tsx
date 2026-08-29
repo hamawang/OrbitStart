@@ -84,9 +84,30 @@ export function ResourceEditorDialog({
       ? "例如：bin\\tool.exe"
       : "C:\\Program Files\\... 或 https://...";
 
+  const handleDrop = (event: React.DragEvent) => {
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      const file = files[0] as File & { path?: string };
+      const path = file.path || file.name;
+      const fileName = path.split(/[/\\]/).pop() || path;
+      const title = fileName.replace(/\.[^/.]+$/, "") || fileName;
+      setInput({
+        target: path,
+        title: input.title.trim() ? input.title : title,
+        subtitle: input.subtitle.trim() ? input.subtitle : path
+      });
+    }
+  };
+
   return (
     <section className="palette-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-panel editor-panel">
+      <div
+        className="modal-panel editor-panel"
+        onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
+        onDrop={handleDrop}
+      >
         <div className="modal-head">
           <div>
             <p className="eyebrow">{editor.mode === "create" ? "New resource" : "Edit resource"}</p>

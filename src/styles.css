@@ -468,8 +468,6 @@ textarea:focus-visible {
   pointer-events: none;
 }
 
-:root[data-theme="local-galaxy"] .search-shell::before,
-:root[data-theme="local-galaxy"] .group-tabs button.selected::before,
 :root[data-theme="local-galaxy"] .primary-action::after {
   position: absolute;
   inset: 0;
@@ -478,19 +476,6 @@ textarea:focus-visible {
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--motion-base) var(--ease-standard);
-}
-
-:root[data-theme="local-galaxy"] .search-shell::before {
-  background: var(--asset-search-edge) center / 100% 100% no-repeat;
-}
-
-:root[data-theme="local-galaxy"] .search-shell:focus-within::before {
-  opacity: 0.42;
-}
-
-:root[data-theme="local-galaxy"] .group-tabs button.selected::before {
-  background: var(--asset-active-tab-glow) center / 120% 150% no-repeat;
-  opacity: 0.28;
 }
 
 :root[data-theme="local-galaxy"] .primary-action::after {
@@ -958,12 +943,10 @@ textarea:focus-visible {
   transform: translate3d(8px, -6px, 0) scale(1.04);
 }
 
-:root[data-theme="local-galaxy"] .resource-icon,
 :root[data-theme="local-galaxy"] .result-icon,
 :root[data-theme="local-galaxy"] .status-icon {
   border-color: rgba(39, 215, 198, 0.3);
   background-image:
-    var(--asset-icon-base, none),
     radial-gradient(circle at 50% 36%, rgba(255, 242, 198, 0.22), transparent 30%),
     radial-gradient(circle at 50% 60%, color-mix(in srgb, var(--accent, var(--teal)) 24%, transparent), transparent 52%),
     linear-gradient(145deg, rgba(39, 215, 198, 0.08), rgba(122, 108, 255, 0.08));
@@ -972,7 +955,19 @@ textarea:focus-visible {
     inset 0 1px 0 rgba(255, 242, 198, 0.1);
 }
 
-:root[data-theme="local-galaxy"] .resource-row:hover .resource-icon,
+:root[data-theme="local-galaxy"] .resource-icon {
+  border-color: transparent;
+  background-color: transparent;
+  background-image: var(--asset-icon-base, none);
+  background-size: 100% 100%;
+  box-shadow: none;
+}
+
+:root[data-theme="local-galaxy"] .resource-row:hover .resource-icon {
+  border-color: transparent;
+  transform: translateY(-1px);
+}
+
 :root[data-theme="local-galaxy"] .palette-results button:hover .result-icon {
   border-color: rgba(255, 242, 198, 0.36);
   transform: translateY(-1px);
@@ -3697,6 +3692,16 @@ kbd {
   border-radius: 12px;
   color: var(--muted);
   text-align: center;
+}
+
+.resource-list > .empty-state {
+  grid-column: 1 / -1;
+  justify-self: center;
+  width: min(460px, 100%);
+}
+
+.resource-list > .empty-state > span {
+  max-width: 34ch;
 }
 
 .empty-state strong {
@@ -10476,4 +10481,12 @@ body.bubble-menu-body #root {
 :root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid .kpi-card:nth-child(4):hover,
 :root:is([data-motion="minimal"], [data-motion="off"])[data-theme="orbit-dark"] .kpi-grid > .workbench-kpi-sortable:nth-child(4) > .kpi-card:hover {
   transform: rotate(0.8deg) !important;
+}
+
+/* The search shell is a composite control and owns its focus indicator.
+   Prevent global and theme-level input focus rings from drawing a second,
+   rectangular ring inside the rounded shell. */
+:root .search-shell > input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }

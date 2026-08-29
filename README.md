@@ -10,7 +10,7 @@
 
 把应用、网址、文件、文件夹、脚本和工作区集中到一个围绕真实任务组织的 Windows 本地工作台。
 
-[![Version](https://img.shields.io/badge/version-0.8.8-2f81f7)](https://github.com/xuxinxi14/OrbitStart/releases)
+[![Version](https://img.shields.io/badge/version-0.9.1-2f81f7)](https://github.com/xuxinxi14/OrbitStart/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078d4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24c8db)
 ![React](https://img.shields.io/badge/React-18-61dafb)
@@ -81,7 +81,7 @@ OrbitStart 尝试提供一个统一入口，让资源围绕“我要完成什么
 2. 下载最新版 Windows x64 安装包：
 
    ```text
-   OrbitStart_0.8.4_x64-setup.exe
+   OrbitStart_0.9.1_x64-setup.exe
    ```
 
 3. 运行安装程序并按提示完成安装。
@@ -997,4 +997,3 @@ Organize resources around real tasks.
 [Releases](https://github.com/xuxinxi14/OrbitStart/releases) · [Issues](https://github.com/xuxinxi14/OrbitStart/issues) · [Source Code](https://github.com/xuxinxi14/OrbitStart)
 
 </div>
-

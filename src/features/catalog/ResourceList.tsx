@@ -411,6 +411,7 @@ export function SortableResourceRow({
       <button
         type="button"
         className="resource-launch"
+        title={item.subtitle || item.target}
         onClick={(event) => (batchMode ? onToggleSelected(item.id, event.shiftKey) : onOpenItem(item))}
         disabled={busy || launchState === "launching" || isDeleting || isDragging || isOverlay}
       >
@@ -437,7 +438,7 @@ export function SortableResourceRow({
             </span>
           )}
         </span>
-        <span className="resource-copy">
+        <span className="resource-copy" title={item.subtitle || item.target}>
           <strong>{item.title}</strong>
           {!isSimple && <small>{item.subtitle || item.target}</small>}
           {!isSimple && (
